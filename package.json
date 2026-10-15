@@ -3,9 +3,12 @@
   "displayName": "摸鱼小说",
   "description": "在编辑器侧边栏搜索网页小说，或粘贴网址只识别该网站，抽取正文阅读，可加入书架。",
   "version": "0.1.0",
-  "publisher": "moyu",
+  "publisher": "torisukirame",
   "icon": "media/icon.png",
-  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/torisu-kirame/VSCode-moyu-js.git"
+  },
   "engines": {
     "vscode": "^1.75.0"
   },

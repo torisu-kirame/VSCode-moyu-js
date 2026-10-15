@@ -1,0 +1,9 @@
+.vscode/**
+src/**
+node_modules/**
+out/**
+tsconfig.json
+.gitignore
+.git/**
+*.vsix
+diag*/**
