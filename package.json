@@ -1,0 +1,84 @@
+{
+  "name": "moyu-novel",
+  "displayName": "摸鱼小说",
+  "description": "在编辑器侧边栏搜索网页小说，或粘贴网址只识别该网站，抽取正文阅读，可加入书架。",
+  "version": "0.1.0",
+  "publisher": "moyu",
+  "icon": "media/icon.png",
+  "private": true,
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:moyuNovel.open",
+    "onView:moyuNovel.reader"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "moyuNovel.open",
+        "title": "摸鱼小说：打开阅读器",
+        "icon": "media/icon.png"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "moyuNovel",
+          "title": "摸鱼小说",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "moyuNovel": [
+        {
+          "type": "webview",
+          "id": "moyuNovel.reader",
+          "name": "摸鱼小说"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "摸鱼小说",
+      "properties": {
+        "moyuNovel.source": {
+          "type": "string",
+          "enum": [
+            "demo",
+            "remote"
+          ],
+          "default": "demo",
+          "enumDescriptions": [
+            "使用内置示例小说，离线可用，开箱即用。",
+            "使用可配置的远程小说 API（需自行提供符合约定的接口）。"
+          ],
+          "description": "小说数据来源。"
+        },
+        "moyuNovel.remoteApiBase": {
+          "type": "string",
+          "default": "",
+          "description": "远程 API 基础地址（source 为 remote 时生效）。接口约定：GET {base}/search?q=关键字 返回 { data:[Book] }；GET {base}/book/{id}/chapters 返回 { data:[Chapter] }；GET {base}/book/{id}/chapter/{chapterId} 返回 { data:{ title, content } }。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.75.0",
+    "@vscode/vsce": "^4.0.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "playwright-core": "^1.64.0"
+  }
+}

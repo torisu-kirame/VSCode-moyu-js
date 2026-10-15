@@ -1,0 +1,1198 @@
+:root {
+  --bg: var(--vscode-editor-background);
+  --card: var(--vscode-sideBar-background);
+  --text: var(--vscode-foreground);
+  --text-2: var(--vscode-descriptionForeground);
+  --line: var(--vscode-panel-border, var(--vscode-widget-border, transparent));
+  --accent: var(--vscode-textLink-foreground, var(--vscode-focusBorder));
+  --accent-soft: var(--vscode-list-hoverBackground);
+  --danger: var(--vscode-errorForeground);
+  --reader-bg: var(--vscode-editor-background);
+  --reader-text: var(--vscode-editor-foreground);
+  --focus: var(--vscode-focusBorder);
+  --input-bg: var(--vscode-input-background);
+  --input-fg: var(--vscode-input-foreground);
+  --input-border: var(--vscode-input-border, transparent);
+  --button-bg: var(--vscode-button-background);
+  --button-fg: var(--vscode-button-foreground);
+  --button-hover: var(--vscode-button-hoverBackground);
+  --button-secondary-bg: var(--vscode-button-secondaryBackground, var(--vscode-input-background));
+  --button-secondary-fg: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  --button-secondary-hover: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground));
+  --nav-h: 40px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  font-weight: var(--vscode-font-weight);
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+#app,
+.app-shell {
+  height: 100%;
+}
+
+.app-shell {
+  position: relative;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+button,
+input {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/* ---------- 页面容器 ---------- */
+.view {
+  flex: 1;
+  overflow-y: auto;
+  padding-bottom: calc(var(--nav-h) + 8px);
+}
+
+.view.hidden {
+  display: none;
+}
+
+.page-header {
+  padding: 12px 16px 8px;
+}
+
+.page-header h1 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.page-header .sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.shelf-head,
+.dl-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dl-head {
+  align-items: center;
+}
+
+.dl-head h1 {
+  margin-left: 8px;
+}
+
+.shelf-dl-btn {
+  width: 28px;
+  height: 28px;
+  padding: 4px;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+}
+
+.shelf-dl-btn svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
+.shelf-dl-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+body.vscode-light .shelf-dl-btn,
+html body.theme-light .shelf-dl-btn {
+  color: #333333;
+}
+
+.dl-card {
+  position: relative;
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dl-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.dl-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.dl-author,
+.dl-meta {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.dl-bar {
+  margin-top: 8px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--input-bg);
+  overflow: hidden;
+}
+
+.dl-bar-fill {
+  height: 100%;
+  background: #3dd68c;
+}
+
+.dl-back-btn,
+.dl-more-btn {
+  width: 28px;
+  height: 28px;
+  padding: 4px;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+}
+
+.dl-back-btn svg,
+.dl-more-btn svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.dl-back-btn:hover,
+.dl-more-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+body.vscode-light .dl-back-btn,
+body.vscode-light .dl-more-btn,
+html body.theme-light .dl-back-btn,
+html body.theme-light .dl-more-btn {
+  color: #333333;
+}
+
+.dl-menu {
+  position: relative;
+  flex: 0 0 auto;
+  align-self: flex-end;
+}
+
+.dl-menu-pop {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 2px);
+  z-index: 5;
+  min-width: 152px;
+  padding: 4px 0;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background, var(--card)));
+  color: var(--vscode-menu-foreground, var(--text));
+  border: 1px solid var(--vscode-menu-border, var(--line));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+}
+
+.dl-menu-pop.hidden {
+  display: none;
+}
+
+.detail-body {
+  padding: 0 12px 16px;
+}
+
+.detail-top {
+  display: flex;
+  gap: 12px;
+  padding: 8px 0 12px;
+}
+
+.detail-cover {
+  flex: 0 0 auto;
+  width: 88px;
+  height: 120px;
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--button-bg);
+  color: var(--button-fg);
+  font-size: 28px;
+  font-weight: 600;
+  overflow: hidden;
+}
+
+.detail-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.detail-name {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.detail-row {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+.detail-desc {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.detail-section-title {
+  margin: 8px 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.detail-chapter-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.detail-chapter {
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--vscode-editorWidget-background, var(--card));
+  color: var(--text);
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-chapter:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.detail-footer {
+  margin-top: 14px;
+  padding-bottom: 8px;
+}
+
+.detail-footer .btn {
+  width: 100%;
+}
+
+/* ---------- 搜索框 ---------- */
+.search-bar {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px 10px;
+}
+
+.search-bar input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--input-border);
+  border-radius: 2px;
+  background: var(--input-bg);
+  color: var(--input-fg);
+  outline: none;
+}
+
+.search-bar input::placeholder {
+  color: var(--vscode-input-placeholderForeground);
+}
+
+.search-bar input:focus {
+  border-color: var(--focus);
+  outline: 1px solid var(--focus);
+  outline-offset: -1px;
+}
+
+.search-bar button,
+.btn {
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: var(--button-secondary-bg);
+  color: var(--button-secondary-fg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.search-bar button,
+.btn.primary {
+  background: var(--button-bg);
+  color: var(--button-fg);
+}
+
+.search-bar button:hover,
+.btn.primary:hover {
+  background: var(--button-hover);
+}
+
+.btn:hover {
+  background: var(--button-secondary-hover);
+}
+
+.btn.primary:hover {
+  background: var(--button-hover);
+}
+
+.btn:focus,
+.search-bar button:focus,
+.nav-item:focus,
+.catalog-head .back:focus,
+.reader-top .back:focus {
+  outline: 1px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.btn.danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: var(--vscode-inputValidation-errorBorder, var(--danger));
+}
+
+.btn.danger:hover {
+  background: var(--vscode-inputValidation-errorBackground, var(--accent-soft));
+}
+
+.btn.shelf-in,
+.btn:disabled,
+.search-bar button:disabled {
+  opacity: 1;
+  background: var(--vscode-button-secondaryBackground, var(--input-bg));
+  color: var(--vscode-disabledForeground, var(--text-2));
+  border-color: transparent;
+  cursor: default;
+}
+
+.btn.shelf-in {
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
+/* ---------- 列表与书籍 ---------- */
+.list {
+  padding: 0 12px 8px;
+}
+
+.book-card {
+  display: flex;
+  gap: 12px;
+  padding: 8px;
+  margin-bottom: 6px;
+  background: var(--vscode-editorWidget-background, var(--card));
+  border: 1px solid var(--vscode-editorWidget-border, var(--line));
+  border-radius: 2px;
+}
+
+.book-card:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.book-cover {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 48px;
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--button-bg);
+  color: var(--button-fg);
+  font-size: 16px;
+  font-weight: 600;
+  overflow: hidden;
+}
+
+.book-cover.has-img {
+  padding: 0;
+  background: var(--card);
+}
+
+.book-cover img,
+.detail-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.book-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.book-meta .title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.book-meta .author,
+.book-meta .desc,
+.progress-line,
+.result-label,
+.hint,
+.loading,
+.web-result .web-snippet,
+.web-result .web-host {
+  color: var(--text-2);
+}
+
+.book-meta .author {
+  margin: 2px 0 0;
+  font-size: 12px;
+}
+
+.book-meta .desc {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.book-meta .tags {
+  margin-top: 6px;
+  display: flex;
+  gap: 6px;
+}
+
+.book-meta .tags span {
+  padding: 0 6px;
+  border-radius: 2px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.book-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+}
+
+.book-menu {
+  position: relative;
+  flex: 0 0 auto;
+  align-self: center;
+}
+
+.book-menu-btn {
+  width: 28px;
+  height: 28px;
+  padding: 4px;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+}
+
+.book-menu-btn svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.book-menu-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+body.vscode-light .book-menu-btn,
+html body.theme-light .book-menu-btn {
+  color: #333333;
+}
+
+.book-menu-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 2px);
+  z-index: 5;
+  min-width: 112px;
+  padding: 4px 0;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background, var(--card)));
+  color: var(--vscode-menu-foreground, var(--text));
+  border: 1px solid var(--vscode-menu-border, var(--line));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+}
+
+.book-menu-pop.hidden {
+  display: none;
+}
+
+.book-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.book-menu-item:hover {
+  background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+  color: var(--vscode-menu-selectionForeground, var(--text));
+}
+
+.book-menu-item.danger {
+  color: var(--danger);
+}
+
+.book-menu-item:disabled {
+  color: var(--vscode-disabledForeground, var(--text-2));
+  cursor: default;
+}
+
+.progress-line {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.empty {
+  padding: 36px 20px;
+  text-align: center;
+  color: var(--text-2);
+}
+
+.empty .big {
+  font-size: 28px;
+  margin-bottom: 8px;
+}
+
+.empty p,
+.hint,
+.loading,
+.error-text,
+.result-label {
+  margin: 4px 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.hint,
+.loading,
+.result-label {
+  padding: 8px 4px;
+}
+
+.error-text {
+  color: var(--danger);
+  padding: 8px 4px;
+}
+
+/* ---------- 搜索结果 ---------- */
+.web-result {
+  padding: 8px 8px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.web-result:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.web-result .web-title {
+  font-size: 13px;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.web-result .web-snippet {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.web-result .web-host {
+  margin-top: 2px;
+  font-size: 12px;
+}
+
+/* ---------- 底部导航 ---------- */
+.bottom-nav {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--nav-h);
+  display: flex;
+  background: var(--vscode-activityBar-background, var(--card));
+  border-top: 1px solid var(--vscode-activityBar-border, var(--line));
+}
+
+.nav-item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  color: var(--vscode-activityBar-inactiveForeground, var(--text-2));
+  user-select: none;
+  border: none;
+  background: transparent;
+}
+
+.nav-item svg {
+  width: 16px;
+  height: 16px;
+}
+
+.nav-item span {
+  font-size: 12px;
+}
+
+.nav-item:hover {
+  color: var(--vscode-activityBar-foreground, var(--text));
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.nav-item.active {
+  color: var(--vscode-activityBar-foreground, var(--text));
+  box-shadow: inset 0 -2px 0 var(--vscode-activityBar-activeBorder, var(--focus));
+}
+
+/* ---------- 阅读页 ---------- */
+.reader {
+  position: absolute;
+  inset: 0;
+  background: var(--reader-bg);
+  color: var(--reader-text);
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+}
+
+.reader.hidden {
+  display: none;
+}
+
+.reader-top,
+.reader-bottom {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--vscode-editorGroupHeader-tabsBackground, var(--reader-bg));
+  border-color: var(--line);
+}
+
+.reader-top {
+  border-bottom: 1px solid var(--line);
+}
+
+.reader-bottom {
+  border-top: 1px solid var(--line);
+  gap: 8px;
+  padding: 8px;
+}
+
+.reader-top .back,
+.catalog-head .back {
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.reader-bookmark svg,
+.reader-back-icon svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.reader-bookmark {
+  padding: 4px 6px;
+}
+
+.font-setting-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+#font-size {
+  width: 64px;
+}
+
+.font-preview {
+  margin-left: 8px;
+  color: var(--text);
+}
+
+.setting-select {
+  min-width: 130px;
+  height: 26px;
+  color: var(--input-fg);
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+}
+
+.catalog-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.catalog-item > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.catalog-bookmark {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 3px;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.catalog-bookmark.marked,
+.catalog-bookmark:hover,
+.reader-bookmark:hover {
+  color: var(--accent);
+}
+
+.catalog-bookmark svg {
+  width: 18px;
+  height: 18px;
+}
+
+.reader-top .back:hover,
+.catalog-head .back:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.reader-top .back:disabled {
+  color: var(--vscode-disabledForeground, var(--text-2));
+  background: transparent;
+  cursor: default;
+}
+
+.reader-top .rt-title {
+  flex: 1;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reader-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px 28px;
+}
+
+.reader-body .chapter-title {
+  margin: 4px 0 16px;
+  font-size: 16px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.reader-content {
+  font-size: 14px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.reader-bottom .spacer {
+  flex: 1;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.reader-bottom .btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* ---------- 目录 ---------- */
+.catalog-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+
+.catalog-overlay.hidden {
+  display: none;
+}
+
+.catalog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.catalog-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.catalog-note {
+  padding: 8px 16px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.catalog-item {
+  padding: 6px 16px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.catalog-item:hover {
+  background: var(--vscode-list-hoverBackground);
+  color: var(--vscode-list-hoverForeground, var(--text));
+}
+
+.catalog-item.active {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+/* ---------- 设置 ---------- */
+.settings-group {
+  margin: 0 12px 12px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--vscode-editorWidget-background, var(--card));
+}
+
+.settings-group-title {
+  padding: 8px 12px 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.setting-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+.setting-label {
+  font-size: 13px;
+}
+
+.setting-desc {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.theme-row {
+  flex-direction: column;
+}
+
+.theme-switch {
+  display: flex;
+  width: fit-content;
+  border: 1px solid var(--input-border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.theme-btn {
+  height: 26px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 0;
+  background: var(--button-secondary-bg);
+  color: var(--button-secondary-fg);
+  cursor: pointer;
+}
+
+.theme-btn + .theme-btn {
+  border-left: 1px solid var(--input-border);
+}
+
+.theme-btn.active {
+  background: var(--button-bg);
+  color: var(--button-fg);
+}
+
+#download-path,
+#data-path {
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--input-border);
+  border-radius: 2px;
+  background: var(--input-bg);
+  color: var(--input-fg);
+  outline: none;
+}
+
+#download-path:focus,
+#data-path:focus {
+  border-color: var(--focus);
+  outline: 1px solid var(--focus);
+  outline-offset: -1px;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.check-row input {
+  margin: 0;
+  accent-color: var(--button-bg);
+}
+
+.setting-row .error-text {
+  margin: 0;
+}
+
+.setting-row .error-text.hidden {
+  display: none;
+}
+
+html body.theme-light {
+  color-scheme: light;
+  --vscode-editor-background: #ffffff;
+  --vscode-editor-foreground: #333333;
+  --vscode-foreground: #333333;
+  --vscode-sideBar-background: #f3f3f3;
+  --vscode-descriptionForeground: #717171;
+  --vscode-panel-border: #e5e5e5;
+  --vscode-widget-border: #e5e5e5;
+  --vscode-textLink-foreground: #006ab1;
+  --vscode-focusBorder: #0090f1;
+  --vscode-list-hoverBackground: #e8e8e8;
+  --vscode-list-hoverForeground: #333333;
+  --vscode-list-activeSelectionBackground: #0060c0;
+  --vscode-list-activeSelectionForeground: #ffffff;
+  --vscode-errorForeground: #e51400;
+  --vscode-input-background: #ffffff;
+  --vscode-input-foreground: #333333;
+  --vscode-input-border: #cecece;
+  --vscode-input-placeholderForeground: #767676;
+  --vscode-button-background: #007acc;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-hoverBackground: #0062a3;
+  --vscode-button-secondaryBackground: #e8e8e8;
+  --vscode-button-secondaryForeground: #333333;
+  --vscode-button-secondaryHoverBackground: #dcdcdc;
+  --vscode-toolbar-hoverBackground: #e8e8e8;
+  --vscode-badge-background: #c4c4c4;
+  --vscode-badge-foreground: #333333;
+  --vscode-editorWidget-background: #f3f3f3;
+  --vscode-editorWidget-border: #c8c8c8;
+  --vscode-activityBar-background: #f3f3f3;
+  --vscode-activityBar-foreground: #333333;
+  --vscode-activityBar-inactiveForeground: #717171;
+  --vscode-activityBar-border: #e5e5e5;
+  --vscode-activityBar-activeBorder: #007acc;
+  --vscode-editorGroupHeader-tabsBackground: #f3f3f3;
+  --vscode-disabledForeground: #a0a0a0;
+  --vscode-inputValidation-errorBorder: #e51400;
+  --vscode-inputValidation-errorBackground: #f2dede;
+  --vscode-scrollbarSlider-background: rgba(100, 100, 100, 0.4);
+  --vscode-scrollbarSlider-hoverBackground: rgba(100, 100, 100, 0.7);
+  --vscode-scrollbarSlider-activeBackground: rgba(0, 0, 0, 0.6);
+  --bg: #ffffff;
+  --card: #f3f3f3;
+  --text: #333333;
+  --text-2: #717171;
+  --line: #e5e5e5;
+  --accent: #006ab1;
+  --accent-soft: #e8e8e8;
+  --danger: #e51400;
+  --reader-bg: #ffffff;
+  --reader-text: #333333;
+  --focus: #0090f1;
+  --input-bg: #ffffff;
+  --input-fg: #333333;
+  --input-border: #cecece;
+  --button-bg: #007acc;
+  --button-fg: #ffffff;
+  --button-hover: #0062a3;
+  --button-secondary-bg: #e8e8e8;
+  --button-secondary-fg: #333333;
+  --button-secondary-hover: #dcdcdc;
+}
+
+html body.theme-dark {
+  color-scheme: dark;
+  --vscode-editor-background: #1e1e1e;
+  --vscode-editor-foreground: #d4d4d4;
+  --vscode-foreground: #cccccc;
+  --vscode-sideBar-background: #252526;
+  --vscode-descriptionForeground: #9d9d9d;
+  --vscode-panel-border: #2b2b2b;
+  --vscode-widget-border: #454545;
+  --vscode-textLink-foreground: #3794ff;
+  --vscode-focusBorder: #007fd4;
+  --vscode-list-hoverBackground: #2a2d2e;
+  --vscode-list-hoverForeground: #cccccc;
+  --vscode-list-activeSelectionBackground: #04395e;
+  --vscode-list-activeSelectionForeground: #ffffff;
+  --vscode-errorForeground: #f48771;
+  --vscode-input-background: #3c3c3c;
+  --vscode-input-foreground: #cccccc;
+  --vscode-input-border: #3c3c3c;
+  --vscode-input-placeholderForeground: #a6a6a6;
+  --vscode-button-background: #0e639c;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-hoverBackground: #1177bb;
+  --vscode-button-secondaryBackground: #3a3d41;
+  --vscode-button-secondaryForeground: #cccccc;
+  --vscode-button-secondaryHoverBackground: #45494e;
+  --vscode-toolbar-hoverBackground: #2a2d2e;
+  --vscode-badge-background: #4d4d4d;
+  --vscode-badge-foreground: #ffffff;
+  --vscode-editorWidget-background: #252526;
+  --vscode-editorWidget-border: #454545;
+  --vscode-activityBar-background: #252526;
+  --vscode-activityBar-foreground: #ffffff;
+  --vscode-activityBar-inactiveForeground: #9d9d9d;
+  --vscode-activityBar-border: #2b2b2b;
+  --vscode-activityBar-activeBorder: #007acc;
+  --vscode-editorGroupHeader-tabsBackground: #252526;
+  --vscode-disabledForeground: #6e6e6e;
+  --vscode-inputValidation-errorBorder: #be1100;
+  --vscode-inputValidation-errorBackground: #5a1d1d;
+  --vscode-scrollbarSlider-background: rgba(121, 121, 121, 0.4);
+  --vscode-scrollbarSlider-hoverBackground: rgba(100, 100, 100, 0.7);
+  --vscode-scrollbarSlider-activeBackground: rgba(191, 191, 191, 0.4);
+  --bg: #1e1e1e;
+  --card: #252526;
+  --text: #cccccc;
+  --text-2: #9d9d9d;
+  --line: #2b2b2b;
+  --accent: #3794ff;
+  --accent-soft: #2a2d2e;
+  --danger: #f48771;
+  --reader-bg: #1e1e1e;
+  --reader-text: #d4d4d4;
+  --focus: #007fd4;
+  --input-bg: #3c3c3c;
+  --input-fg: #cccccc;
+  --input-border: #3c3c3c;
+  --button-bg: #0e639c;
+  --button-fg: #ffffff;
+  --button-hover: #1177bb;
+  --button-secondary-bg: #3a3d41;
+  --button-secondary-fg: #cccccc;
+  --button-secondary-hover: #45494e;
+}
+
+/* ---------- 滚动条 ---------- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--vscode-scrollbarSlider-hoverBackground);
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: var(--vscode-scrollbarSlider-activeBackground);
+}
