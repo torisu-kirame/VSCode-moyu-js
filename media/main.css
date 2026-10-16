@@ -1028,6 +1028,29 @@ html body.theme-light .book-menu-btn {
   outline-offset: -1px;
 }
 
+.data-load-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 6px;
+}
+
+.data-load-line .btn {
+  height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
+  flex: none;
+}
+
+.data-load-line #data-hint {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .check-row {
   display: flex;
   align-items: center;

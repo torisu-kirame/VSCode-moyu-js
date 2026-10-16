@@ -24,6 +24,36 @@
 
 ![设置](media/screenshots/settings.png)
 
+## 安装
+
+### 方式一：插件市场
+
+在 VS Code / Cursor / Trae 等编辑器的扩展面板中搜索「**摸鱼小说**」（或 `moyu-novel`），点击安装。
+
+### 方式二：本地安装 vsix
+
+从 [GitHub Releases](https://github.com/torisu-kirame/VSCode-moyu-js/releases) 下载最新版本的 `moyu-novel-x.x.x.vsix`，然后：
+
+- **界面安装**：打开编辑器的扩展面板 → 右上角 `···` 菜单 → **从 VSIX 安装…** → 选择下载的文件。
+- **命令行安装**（适用于所有支持 vsix 的 IDE，命令换成对应编辑器的 CLI 即可）：
+
+```powershell
+# VS Code
+code --install-extension "moyu-novel-0.1.6.vsix"
+
+# Cursor
+cursor --install-extension "moyu-novel-0.1.6.vsix"
+
+# Trae
+trae --install-extension "moyu-novel-0.1.6.vsix"
+
+# VSCodium / Windsurf 等其它衍生 IDE 同理，使用各自的命令行入口
+```
+
+安装后重新加载窗口（`Ctrl+Shift+P` → `Reload Window`），点击左侧活动栏的鱼图标即可使用。
+
+> 提示：Cursor 默认从 Open VSX 搜索扩展，市场里搜不到时用上面的 vsix 方式安装。
+
 ## 功能
 
 - 安装后在活动栏显示鱼形图标，点开就是阅读器。
@@ -71,6 +101,7 @@
 
 书架、进度、主题、书签等默认保存在扩展的本机存储里；在设置中填写数据存储路径后，会同步写入该目录下的 `moyu-data.json`，供不同编辑器共享。下载的书会写到设置里的下载路径，每本书一个文件夹：
 
+- `book.json`：该书的基本信息、目录、书签、阅读进度与下载完成情况
 - `assets/`：封面图片、作者、类型等检索信息
 - `cache/`：目录、爬取摘要、阅读位置（保留 30 天）
 - `MainTXT/`：章节正文 txt

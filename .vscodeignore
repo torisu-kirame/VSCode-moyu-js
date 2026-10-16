@@ -1,6 +1,7 @@
 .vscode/**
 src/**
 node_modules/**
+!node_modules/playwright-core/**
 out/**
 tsconfig.json
 .gitignore

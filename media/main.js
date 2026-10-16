@@ -146,9 +146,13 @@
           <div class="setting-row theme-row">
             <div>
               <div class="setting-label">数据存储路径</div>
-              <p class="setting-desc">书架、阅读进度、界面主题等偏好会保存到这个目录下的 moyu-data.json。指向同一个目录时，VSCode、Trae 等不同软件里的摸鱼小说可以共享这些数据。留空则只保存在当前软件内部。</p>
+              <p class="setting-desc">书架、阅读进度、界面主题等偏好会保存到这个目录下的 moyu-data.json，留空则与下载存储路径一致。换设备或换软件时，指向同一目录并点「读取数据」即可载入本机该目录下的数据。</p>
             </div>
-            <input id="data-path" type="text" spellcheck="false" placeholder="例如 D:\\moyu-data" />
+            <input id="data-path" type="text" spellcheck="false" placeholder="留空则使用下载存储路径" />
+            <div class="data-load-line">
+              <button id="data-import" class="btn primary" type="button">读取数据</button>
+              <span id="data-hint" class="setting-desc"></span>
+            </div>
             <p class="setting-desc error-text hidden" id="data-error"></p>
           </div>
         </div>
@@ -248,6 +252,8 @@
     detailTitle: $('detail-title'),
     dataPath: $('data-path'),
     dataError: $('data-error'),
+    dataImport: $('data-import'),
+    dataHint: $('data-hint'),
     fontSize: $('font-size'),
     fontPreview: $('font-preview'),
     fontModifier: $('font-modifier'),
@@ -989,6 +995,7 @@
     try {
       const saved = await post('saveDataSettings', { path: els.dataPath.value });
       els.dataPath.value = saved.path;
+      els.dataHint.textContent = saved.path ? '' : '当前使用下载目录：' + (saved.effective || '');
       try {
         state.shelf = await post('getShelf', {});
       } catch (e) {
@@ -1003,9 +1010,57 @@
     }
   }
 
+  /** 手动读取当前数据目录下的 moyu-data.json 并刷新界面，便于跨设备交换数据。 */
+  async function loadSharedData() {
+    els.dataError.classList.add('hidden');
+    els.dataError.textContent = '';
+    els.dataImport.disabled = true;
+    els.dataHint.textContent = '正在读取…';
+    try {
+      await post('importData', {});
+      try {
+        applyTheme(await post('getTheme', {}));
+      } catch (e) {
+        /* 保留当前主题 */
+      }
+      try {
+        state.readerSettings = await post('getReaderSettings', {});
+        els.fontSize.value = state.readerSettings.fontSize;
+        els.fontModifier.value = state.readerSettings.fontSizeModifier;
+        els.bookmarkModifier.value = state.readerSettings.bookmarkModifier;
+        applyReaderFontSize();
+      } catch (e) {
+        /* 保留当前阅读设置 */
+      }
+      try {
+        const download = await post('getDownloadSettings', {});
+        $('download-path').value = download.path || '';
+        $('auto-download').checked = !!download.auto;
+      } catch (e) {
+        /* 保留当前下载设置 */
+      }
+      try {
+        state.shelf = await post('getShelf', {});
+      } catch (e) {
+        state.shelf = [];
+      }
+      renderShelf();
+      refreshSearch();
+      updateReaderShelfBtn();
+      els.dataHint.textContent = '已读取，书架共 ' + state.shelf.length + ' 本书';
+    } catch (e) {
+      els.dataHint.textContent = '';
+      els.dataError.textContent = e.message || '读取数据失败';
+      els.dataError.classList.remove('hidden');
+    } finally {
+      els.dataImport.disabled = false;
+    }
+  }
+
   $('download-path').addEventListener('change', saveDownloadSettings);
   $('auto-download').addEventListener('change', saveDownloadSettings);
   $('data-path').addEventListener('change', saveDataSettings);
+  $('data-import').addEventListener('click', loadSharedData);
   els.fontSize.addEventListener('input', () => {
     const value = Number(els.fontSize.value);
     if (Number.isFinite(value) && value >= 12 && value <= 32) els.fontPreview.style.fontSize = value + 'px';
@@ -1242,6 +1297,7 @@
     try {
       const data = await post('getDataSettings', {});
       els.dataPath.value = data.path || '';
+      els.dataHint.textContent = data.path ? '' : '当前使用下载目录：' + (data.effective || '');
     } catch (e) {
       els.dataError.textContent = e.message || '没有读到数据路径';
       els.dataError.classList.remove('hidden');

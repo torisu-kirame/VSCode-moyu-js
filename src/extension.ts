@@ -1,13 +1,17 @@
 import * as vscode from 'vscode';
 import { Book, Chapter, ChapterContent, NovelSource, ShelfItem } from './types';
 import { DemoSource, RemoteSource } from './novelSource';
-import {
-  disposeBrowser,
-  inspectWebResults,
-  loadWebBookChapters,
-  loadWebChapterContent,
-  searchWeb,
-} from './webSearch';
+
+// playwright-core 体积大、加载需要约 2 秒，若在顶层静态导入会阻塞扩展激活，
+// 表现为打开插件时顶部进度条长时间转圈。改为首次真正联网时才动态加载。
+type WebSearchModule = typeof import('./webSearch');
+let webSearchPromise: Promise<WebSearchModule> | undefined;
+function getWebSearch(): Promise<WebSearchModule> {
+  if (!webSearchPromise) {
+    webSearchPromise = import('./webSearch');
+  }
+  return webSearchPromise;
+}
 import {
   countDownloaded,
   defaultDownloadPath,
@@ -16,12 +20,14 @@ import {
   readDownloaded,
   readLocalChapters,
   readReadingProgress,
+  scanBookConfigs,
+  updateBookConfig,
   saveBookAssets,
   saveBookCatalog,
   saveDownloaded,
   saveReadingProgress,
 } from './downloadStore';
-import { normalizeDataPath, readSharedData, writeSharedData } from './dataStore';
+import { normalizeDataPath, readSharedData, writeSharedData, SharedData } from './dataStore';
 
 const SHELF_KEY = 'moyuNovel.shelf';
 const PROGRESS_KEY = 'moyuNovel.progress';
@@ -65,7 +71,8 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {
-  void disposeBrowser();
+  // 没有联网过就不会加载 playwright，无需清理浏览器。
+  void webSearchPromise?.then((m) => m.disposeBrowser());
 }
 
 class NovelViewProvider implements vscode.WebviewViewProvider {
@@ -91,22 +98,27 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
         continue;
       }
       if (task.status === 'running' || task.status === 'queued') {
-        this.enqueueDownload(task.book);
+        // 不再在启动时自动恢复未完成的下载：那样每次打开插件都会立刻启动
+        // 浏览器重新抓取目录和正文，导致界面长时间卡顿。改为暂停，等用户在
+        // 下载管理中手动点「继续下载」。
+        task.status = 'paused';
+        this.pausedDownloads.add(task.book.id);
       }
     }
+    this.persistTasks();
     void this.importSharedData();
   }
 
   /** 启动时把共享目录里的数据读进当前软件，实现跨软件共享。 */
   private async importSharedData(): Promise<void> {
-    const root = this.dataPath();
-    if (!root) {
-      return;
+    const data = await readSharedData(this.dataPath());
+    if (data) {
+      await this.applySharedData(data);
     }
-    const data = await readSharedData(root);
-    if (!data) {
-      return;
-    }
+  }
+
+  /** 把共享文件里的数据应用到本地，返回摘要供界面反馈。 */
+  private async applySharedData(data: SharedData): Promise<{ shelf: number }> {
     const g = this.context.globalState;
     if (Array.isArray(data.shelf) && data.shelf.length) {
       await g.update(SHELF_KEY, data.shelf);
@@ -139,6 +151,26 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
     if (typeof data.autoDownload === 'boolean') {
       await g.update(AUTO_DOWNLOAD_KEY, data.autoDownload);
     }
+    // 恢复下载管理：本地没有的任务补进来，统一按暂停处理，需要时手动继续。
+    if (Array.isArray(data.downloadTasks)) {
+      const known = new Set(this.tasks.map((task) => task.book.id));
+      for (const raw of data.downloadTasks as DownloadTask[]) {
+        if (raw && raw.book && typeof raw.book.id === 'string' && !known.has(raw.book.id)) {
+          this.tasks.push({
+            book: raw.book,
+            done: Number(raw.done) || 0,
+            pending: Number(raw.pending) || 0,
+            total: Number(raw.total) || 0,
+            status: raw.status === 'done' ? 'done' : 'paused',
+            error: typeof raw.error === 'string' ? raw.error : '',
+          });
+          known.add(raw.book.id);
+        }
+      }
+      this.tasks = this.tasks.slice(0, 40);
+      this.persistTasks();
+    }
+    return { shelf: Array.isArray(data.shelf) ? data.shelf.length : 0 };
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView) {
@@ -193,13 +225,13 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
             this.respond(msg.requestId, true, []);
             break;
           }
-          const data = await searchWeb(query);
+          const data = await (await getWebSearch()).searchWeb(query);
           this.respond(msg.requestId, true, data);
           break;
         }
         case 'inspectWeb': {
           const results = Array.isArray(msg.payload.results) ? msg.payload.results : [];
-          const data = await inspectWebResults(results);
+          const data = await (await getWebSearch()).inspectWebResults(results);
           this.respond(msg.requestId, true, data);
           break;
         }
@@ -234,12 +266,47 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
           break;
         }
         case 'getDataSettings': {
-          this.respond(msg.requestId, true, { path: this.dataPath() });
+          const stored = this.context.globalState.get(DATA_PATH_KEY);
+          this.respond(msg.requestId, true, {
+            path: typeof stored === 'string' ? stored : '',
+            effective: this.dataPath(),
+          });
           break;
         }
         case 'saveDataSettings': {
           const saved = this.saveDataSettings(msg.payload.path);
           this.respond(msg.requestId, true, saved);
+          break;
+        }
+        case 'importData': {
+          const data = await readSharedData(this.dataPath());
+          if (!data) {
+            throw new Error('当前数据目录下没有找到有效的 moyu-data.json。');
+          }
+          const summary = await this.applySharedData(data);
+          // 二次检索：扫描下载目录里各书籍的 book.json，把缺失的书补回书架。
+          const configs = await scanBookConfigs(this.downloadPath());
+          if (configs.length) {
+            const shelf = this.loadShelf();
+            let changed = false;
+            for (const cfg of configs) {
+              const book = cfg.book;
+              if (book && book.id && !shelf.some((it) => it.book.id === book.id)) {
+                shelf.push({
+                  book,
+                  addedAt: Date.now(),
+                  lastReadChapterIndex: cfg.progress ? cfg.progress.chapterIndex : 0,
+                });
+                changed = true;
+              }
+            }
+            if (changed) {
+              await this.context.globalState.update(SHELF_KEY, shelf);
+              this.syncShared({ shelf });
+            }
+            summary.shelf = shelf.length;
+          }
+          this.respond(msg.requestId, true, summary);
           break;
         }
         case 'listDownloads': {
@@ -422,7 +489,7 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
       }
       try {
         const listPages = Array.isArray(book.listPages) ? book.listPages.filter((item) => typeof item === 'string') : [];
-        const result = await loadWebBookChapters({
+        const result = await (await getWebSearch()).loadWebBookChapters({
           bookId,
           catalogUrl: String(book.catalogUrl || ''),
           pageUrl: String(book.pageUrl || ''),
@@ -530,6 +597,7 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
           return sourceFor(String(task.book.source || 'demo')).getContent(bookId, chapter.id);
         }
         let last: unknown;
+        const { loadWebChapterContent } = await getWebSearch();
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
             return await loadWebChapterContent(String(chapter.url || chapter.id), chapter.title);
@@ -639,6 +707,7 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
   private persistTasks() {
     const slim = this.tasks.slice(0, 40);
     void this.context.globalState.update(DOWNLOAD_TASKS_KEY, slim);
+    this.syncShared({ downloadTasks: slim });
   }
 
   private pushTask(task: DownloadTask) {
@@ -676,28 +745,27 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
       try {
         return normalizeDataPath(stored);
       } catch {
-        return '';
+        // 保存的路径失效时退回下载目录。
       }
     }
-    return '';
+    // 未单独配置时，数据存储路径默认与下载存储路径一致。
+    return this.downloadPath();
   }
 
-  private saveDataSettings(pathValue: unknown): { path: string } {
+  private saveDataSettings(pathValue: unknown): { path: string; effective: string } {
     const dataPath = normalizeDataPath(typeof pathValue === 'string' ? pathValue : '');
     void this.context.globalState.update(DATA_PATH_KEY, dataPath);
-    if (dataPath) {
-      // 切到共享目录时把当前数据带过去，避免看起来像数据丢了。
-      void writeSharedData(dataPath, {
-        shelf: this.loadShelf(),
-        progress: this.loadProgress(),
-        bookmarks: this.loadBookmarks(),
-        theme: this.loadTheme(),
-        ...this.readerSettings(),
-        downloadPath: this.downloadPath(),
-        autoDownload: this.autoDownload(),
-      }).catch(() => undefined);
-    }
-    return { path: dataPath };
+    // 把当前数据写入实际生效的目录（未单独配置时即下载目录），避免切换后看起来像数据丢了。
+    void writeSharedData(this.dataPath(), {
+      shelf: this.loadShelf(),
+      progress: this.loadProgress(),
+      bookmarks: this.loadBookmarks(),
+      theme: this.loadTheme(),
+      ...this.readerSettings(),
+      downloadPath: this.downloadPath(),
+      autoDownload: this.autoDownload(),
+    }).catch(() => undefined);
+    return { path: dataPath, effective: this.dataPath() };
   }
 
   private syncShared(patch: Record<string, unknown>) {
@@ -725,7 +793,7 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
     }
     const data =
       payload.source === 'web'
-        ? await loadWebChapterContent(String(payload.chapterUrl || chapterId), String(payload.chapterTitle || ''))
+        ? await (await getWebSearch()).loadWebChapterContent(String(payload.chapterUrl || chapterId), String(payload.chapterTitle || ''))
         : await sourceFor(String(payload.source || 'demo')).getContent(bookId, chapterId);
     if (this.autoDownload() && bookId && chapterId && data.content) {
       try {
@@ -765,6 +833,8 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
     all[bookId] = list;
     void this.context.globalState.update(BOOKMARKS_KEY, all);
     this.syncShared({ bookmarks: all });
+    // 书签同步写入书籍文件夹里的 book.json，便于随下载目录一起迁移。
+    void updateBookConfig({ root: this.downloadPath(), bookId, patch: { bookmarks: list } });
     return list;
   }
 

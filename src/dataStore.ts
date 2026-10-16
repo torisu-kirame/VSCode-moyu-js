@@ -13,6 +13,7 @@ export interface SharedData {
   bookmarkModifier?: unknown;
   downloadPath?: unknown;
   autoDownload?: unknown;
+  downloadTasks?: unknown;
 }
 
 export function normalizeDataPath(input: string): string {

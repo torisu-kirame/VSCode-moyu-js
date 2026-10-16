@@ -32,6 +32,19 @@ interface CatalogCache {
   updatedAt: number;
 }
 
+/** 每个书籍文件夹根部的 book.json：书籍基本信息 + 目录 + 书签 + 进度等二次检索数据。 */
+export interface BookConfig {
+  book?: Book;
+  chapters?: Chapter[];
+  chaptersComplete?: boolean;
+  bookmarks?: unknown[];
+  progress?: { chapterIndex: number; chapterId?: string };
+  downloaded?: { done: number; total: number };
+  updatedAt?: number;
+}
+
+const BOOK_CONFIG_NAME = 'book.json';
+
 interface ProgressCache {
   chapterIndex: number;
   chapterId?: string;
@@ -176,6 +189,9 @@ export async function saveReadingProgress(options: {
       updatedAt: Date.now(),
     };
     await fs.promises.writeFile(path.join(cacheDir, PROGRESS_NAME), JSON.stringify(payload, null, 2), 'utf8');
+    await patchBookConfig(bookRoot, {
+      progress: { chapterIndex: options.chapterIndex, chapterId: options.chapterId },
+    });
   });
 }
 
@@ -193,6 +209,98 @@ export async function readReadingProgress(
     return undefined;
   }
   return { chapterIndex: data.chapterIndex, chapterId: data.chapterId };
+}
+
+/** 更新书籍文件夹里的 book.json（合并写入）。书籍文件夹不存在时跳过。 */
+export async function updateBookConfig(options: {
+  root: string;
+  bookId: string;
+  patch: BookConfig;
+}): Promise<void> {
+  if (!options.bookId) {
+    return;
+  }
+  await enqueue(async () => {
+    const bookRoot = await resolveBookRoot(options.root, options.bookId);
+    if (!bookRoot) {
+      return;
+    }
+    await patchBookConfig(bookRoot, options.patch);
+  });
+}
+
+export async function readBookConfig(rootInput: string, bookId: string): Promise<BookConfig | undefined> {
+  const bookRoot = await resolveBookRoot(rootInput, bookId);
+  if (!bookRoot) {
+    return undefined;
+  }
+  return readJson<BookConfig>(path.join(bookRoot, BOOK_CONFIG_NAME));
+}
+
+/** 扫描下载目录下所有书籍文件夹（book.json，缺失时退回 assets/meta.json），用于跨设备重建书架。 */
+export async function scanBookConfigs(rootInput: string): Promise<BookConfig[]> {
+  let root: string;
+  try {
+    root = normalizeDownloadPath(rootInput);
+  } catch {
+    return [];
+  }
+  let dirs: string[];
+  try {
+    dirs = (await fs.promises.readdir(root, { withFileTypes: true }))
+      .filter((item) => item.isDirectory())
+      .map((item) => item.name);
+  } catch {
+    return [];
+  }
+  const configs: BookConfig[] = [];
+  const seen = new Set<string>();
+  for (const dir of dirs) {
+    const bookRoot = path.join(root, dir);
+    const config = await readJson<BookConfig>(path.join(bookRoot, BOOK_CONFIG_NAME));
+    if (config && config.book && config.book.id && !seen.has(config.book.id)) {
+      seen.add(config.book.id);
+      configs.push(config);
+      continue;
+    }
+    const meta = await readJson<Record<string, unknown>>(path.join(bookRoot, 'assets', META_NAME));
+    const id = meta && typeof meta.id === 'string' ? meta.id : '';
+    if (!id || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    const book = (meta || {}) as unknown as Book;
+    const catalog = await readCatalogCache(bookRoot);
+    const progress = await readJsonIfFresh<ProgressCache>(path.join(bookRoot, 'cache', PROGRESS_NAME));
+    configs.push({
+      book,
+      chapters: catalog?.chapters,
+      chaptersComplete: catalog?.complete,
+      progress: progress ? { chapterIndex: progress.chapterIndex, chapterId: progress.chapterId } : undefined,
+    });
+  }
+  return configs;
+}
+
+async function patchBookConfig(bookRoot: string, patch: BookConfig): Promise<void> {
+  const file = path.join(bookRoot, BOOK_CONFIG_NAME);
+  let prev: BookConfig = {};
+  try {
+    const parsed = JSON.parse(await fs.promises.readFile(file, 'utf8')) as BookConfig;
+    if (parsed && typeof parsed === 'object') {
+      prev = parsed;
+    }
+  } catch {
+    // 首次创建时没有旧文件。
+  }
+  const merged: BookConfig = { ...prev };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value !== undefined) {
+      (merged as Record<string, unknown>)[key] = value;
+    }
+  }
+  merged.updatedAt = Date.now();
+  await fs.promises.writeFile(file, JSON.stringify(merged, null, 2), 'utf8');
 }
 
 export async function readDownloaded(rootInput: string, bookId: string, chapterId: string): Promise<ChapterContent | undefined> {
@@ -270,6 +378,11 @@ async function writeChapter(options: {
   await fs.promises.writeFile(file, title + '\n\n' + options.content, 'utf8');
   index.files[options.chapterId] = { name, title };
   await fs.promises.writeFile(path.join(mainDir, MAIN_INDEX_NAME), JSON.stringify(index, null, 2), 'utf8');
+  const done = Object.keys(index.files).length;
+  const catalog = await readCatalogCache(bookRoot);
+  await patchBookConfig(bookRoot, {
+    downloaded: { done, total: catalog?.chapters.length || done },
+  });
 }
 
 async function writeBookCatalog(options: {
@@ -318,6 +431,11 @@ async function writeBookCatalog(options: {
     ),
     'utf8'
   );
+  await patchBookConfig(bookRoot, {
+    ...(options.book ? { book: options.book } : {}),
+    chapters: payload.chapters,
+    chaptersComplete: payload.complete,
+  });
 }
 
 async function writeBookAssets(options: {
@@ -362,6 +480,7 @@ async function writeBookAssets(options: {
     updatedAt: Date.now(),
   };
   await fs.promises.writeFile(path.join(assetsDir, META_NAME), JSON.stringify(meta, null, 2), 'utf8');
+  await patchBookConfig(bookRoot, { book: options.book });
 }
 
 async function downloadCover(assetsDir: string, url: string, previous?: string): Promise<string> {
