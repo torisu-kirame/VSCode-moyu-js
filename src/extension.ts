@@ -13,18 +13,18 @@ function getWebSearch(): Promise<WebSearchModule> {
   return webSearchPromise;
 }
 import {
-  countDownloaded,
   defaultDownloadPath,
   hasDownloadedBook,
+  listDownloadedChapterIds,
   normalizeDownloadPath,
   readDownloaded,
   readLocalChapters,
   readReadingProgress,
   scanBookConfigs,
   updateBookConfig,
-  saveBookAssets,
   saveBookCatalog,
   saveDownloaded,
+  saveDownloadedBatch,
   saveReadingProgress,
 } from './downloadStore';
 import { normalizeDataPath, readSharedData, writeSharedData, SharedData } from './dataStore';
@@ -41,6 +41,27 @@ const DOWNLOAD_PATH_KEY = 'moyuNovel.downloadPath';
 const AUTO_DOWNLOAD_KEY = 'moyuNovel.autoDownload';
 const DOWNLOAD_TASKS_KEY = 'moyuNovel.downloadTasks';
 const DATA_PATH_KEY = 'moyuNovel.dataPath';
+const DOWNLOAD_CONCURRENCY = 3;
+const DOWNLOAD_BATCH_SIZE = 6;
+
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const output = new Array<R>(items.length);
+  let cursor = 0;
+  const count = Math.min(Math.max(1, limit), items.length);
+  await Promise.all(
+    Array.from({ length: count }, async () => {
+      while (cursor < items.length) {
+        const index = cursor++;
+        output[index] = await worker(items[index], index);
+      }
+    })
+  );
+  return output;
+}
 
 function sourceFor(name: string): NovelSource {
   if (name === 'remote') {
@@ -72,7 +93,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {
   // 没有联网过就不会加载 playwright，无需清理浏览器。
-  void webSearchPromise?.then((m) => m.disposeBrowser());
+  void webSearchPromise?.then((m) => m.disposeBrowser()).catch(() => undefined);
 }
 
 class NovelViewProvider implements vscode.WebviewViewProvider {
@@ -83,6 +104,7 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
   private readonly context: vscode.ExtensionContext;
   private tasks: DownloadTask[] = [];
   private readonly runningDownloads = new Set<string>();
+  private readonly scheduledDownloads = new Set<string>();
   private readonly pausedDownloads = new Set<string>();
   private downloadChain: Promise<void> = Promise.resolve();
 
@@ -261,7 +283,7 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
           break;
         }
         case 'saveDownloadSettings': {
-          const saved = this.saveDownloadSettings(msg.payload.path, msg.payload.auto);
+          const saved = await this.saveDownloadSettings(msg.payload.path, msg.payload.auto);
           this.respond(msg.requestId, true, saved);
           break;
         }
@@ -274,7 +296,7 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
           break;
         }
         case 'saveDataSettings': {
-          const saved = this.saveDataSettings(msg.payload.path);
+          const saved = await this.saveDataSettings(msg.payload.path);
           this.respond(msg.requestId, true, saved);
           break;
         }
@@ -402,7 +424,7 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
         case 'saveTheme': {
           const raw = String(msg.payload.theme || '');
           const theme = raw === 'light' || raw === 'dark' ? raw : 'auto';
-          this.context.globalState.update(THEME_KEY, theme);
+          await this.context.globalState.update(THEME_KEY, theme);
           this.syncShared({ theme });
           this.respond(msg.requestId, true, theme);
           break;
@@ -432,7 +454,6 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
         lastReadChapterIndex: 0,
       });
     }
-    this.context.globalState.update(SHELF_KEY, shelf);
     void this.context.globalState.update(SHELF_KEY, shelf);
     this.syncShared({ shelf });
     return shelf;
@@ -440,7 +461,7 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
 
   private removeFromShelf(bookId: string): ShelfItem[] {
     const shelf = this.loadShelf().filter((it) => it.book.id !== bookId);
-    this.context.globalState.update(SHELF_KEY, shelf);
+    void this.context.globalState.update(SHELF_KEY, shelf);
     this.syncShared({ shelf });
     return shelf;
   }
@@ -452,7 +473,7 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
   private saveProgress(bookId: string, chapterIndex: number, chapterId?: string) {
     const progress = this.loadProgress();
     progress[bookId] = { chapterIndex, chapterId };
-    this.context.globalState.update(PROGRESS_KEY, progress);
+    void this.context.globalState.update(PROGRESS_KEY, progress);
     this.syncShared({ progress });
     const book =
       this.tasks.find((task) => task.book.id === bookId)?.book ||
@@ -532,9 +553,17 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
     }
     this.persistTasks();
     this.pushTask(task);
-    if (!this.runningDownloads.has(book.id)) {
+    if (!this.runningDownloads.has(book.id) && !this.scheduledDownloads.has(book.id)) {
       const bookId = book.id;
-      this.downloadChain = this.downloadChain.then(() => this.runDownload(bookId)).catch(() => undefined);
+      this.scheduledDownloads.add(bookId);
+      this.downloadChain = this.downloadChain
+        .then(async () => {
+          this.scheduledDownloads.delete(bookId);
+          await this.runDownload(bookId);
+        })
+        .catch(() => {
+          this.scheduledDownloads.delete(bookId);
+        });
     }
     return task;
   }
@@ -566,30 +595,38 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
     this.persistTasks();
     this.pushTask(task);
     let stoppedByPause = false;
+    const root = this.downloadPath();
     try {
-      const chapters = (await this.fetchChapters(task.book, { skipLocal: true })).chapters;
+      const fetchedChapters = (await this.fetchChapters(task.book, { skipLocal: true })).chapters;
+      const seenChapterIds = new Set<string>();
+      const chapters = fetchedChapters.filter((chapter) => {
+        const id = String(chapter?.id || '');
+        if (!id || seenChapterIds.has(id)) {
+          return false;
+        }
+        seenChapterIds.add(id);
+        return true;
+      });
+      if (!chapters.length) {
+        throw new Error('没有可下载的章节。');
+      }
       if (this.pausedDownloads.has(bookId)) {
         stoppedByPause = true;
         task.status = 'paused';
         return;
       }
       await saveBookCatalog({
-        root: this.downloadPath(),
+        root,
         bookId,
         bookTitle: task.book.title,
         book: task.book,
         chapters,
         complete: false,
       });
-      await saveBookAssets({
-        root: this.downloadPath(),
-        bookId,
-        book: task.book,
-      });
       task.total = chapters.length;
-      const already = await countDownloaded(this.downloadPath(), bookId, chapters.map((chapter) => chapter.id));
-      task.done = already;
-      task.pending = Math.max(chapters.length - already, 0);
+      const downloaded = await listDownloadedChapterIds(root, bookId);
+      task.done = chapters.reduce((count, chapter) => count + (downloaded.has(chapter.id) ? 1 : 0), 0);
+      task.pending = Math.max(chapters.length - task.done, 0);
       this.persistTasks();
       this.pushTask(task);
       const pullChapter = async (chapter: Chapter) => {
@@ -603,49 +640,72 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
             return await loadWebChapterContent(String(chapter.url || chapter.id), chapter.title);
           } catch (e) {
             last = e;
-            await new Promise((resolve) => setTimeout(resolve, 800));
+            if (attempt < 2) {
+              await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+            }
           }
         }
         throw last instanceof Error ? last : new Error('打开章节网页失败。');
       };
-      const saveChapter = async (chapter: Chapter) => {
-        const saved = await readDownloaded(this.downloadPath(), bookId, chapter.id);
-        if (saved) {
-          return false;
-        }
-        const data = await pullChapter(chapter);
-        await saveDownloaded({
-          root: this.downloadPath(),
-          bookId,
-          chapterId: chapter.id,
-          bookTitle: task.book.title || '未命名小说',
-          title: data.title || chapter.title,
-          content: data.content,
-          book: task.book,
-        });
-        task.done += 1;
-        task.pending = Math.max(task.total - task.done, 0);
-        task.error = '';
-        return true;
-      };
       let failed = 0;
+      let lastFailure = '';
       const noteFailure = (chapter: Chapter, e: unknown) => {
         failed += 1;
-        task.error = (chapter.title || '某一章') + '：' + (e instanceof Error ? e.message : String(e));
+        lastFailure = (chapter.title || '某一章') + '：' + (e instanceof Error ? e.message : String(e));
+        task.error = lastFailure;
       };
       const shouldStop = () => this.pausedDownloads.has(bookId);
-      for (const chapter of chapters) {
+      const missing = chapters.filter((chapter) => !downloaded.has(chapter.id));
+      for (let offset = 0; offset < missing.length; offset += DOWNLOAD_BATCH_SIZE) {
         if (shouldStop()) {
           stoppedByPause = true;
           break;
         }
-        try {
-          await saveChapter(chapter);
-        } catch (e) {
-          noteFailure(chapter, e);
+        const batch = missing.slice(offset, offset + DOWNLOAD_BATCH_SIZE);
+        const results = await mapLimit<
+          Chapter,
+          { chapter: Chapter; data?: ChapterContent; error?: unknown; skipped?: boolean }
+        >(batch, DOWNLOAD_CONCURRENCY, async (chapter) => {
+          if (shouldStop()) {
+            return { chapter, skipped: true };
+          }
+          try {
+            return { chapter, data: await pullChapter(chapter) };
+          } catch (error) {
+            return { chapter, error };
+          }
+        });
+        const successful = results.filter(
+          (result): result is { chapter: Chapter; data: ChapterContent } => !!result.data
+        );
+        if (successful.length) {
+          await saveDownloadedBatch({
+            root,
+            bookId,
+            bookTitle: task.book.title || '未命名小说',
+            chapters: successful.map(({ chapter, data }) => ({
+              chapterId: chapter.id,
+              title: data.title || chapter.title,
+              content: data.content,
+            })),
+          });
+          successful.forEach(({ chapter }) => downloaded.add(chapter.id));
+          task.done = chapters.reduce((count, chapter) => count + (downloaded.has(chapter.id) ? 1 : 0), 0);
+          task.pending = Math.max(task.total - task.done, 0);
+        }
+        for (const result of results) {
+          if (result.error !== undefined) {
+            noteFailure(result.chapter, result.error);
+          }
         }
         this.persistTasks();
-        this.pushTask(task);
+        if (this.tasks.includes(task)) {
+          this.pushTask(task);
+        }
+        if (results.some((result) => result.skipped) || shouldStop()) {
+          stoppedByPause = true;
+          break;
+        }
       }
       if (stoppedByPause || shouldStop()) {
         task.status = 'paused';
@@ -654,7 +714,11 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
       }
       if (failed > 0) {
         task.status = 'error';
-        task.error = '有 ' + failed + ' 章没能打开，已保存的章节会保留。再点一次下载会从剩下的章节继续。' + (task.error ? ' 最近一次：' + task.error : '');
+        task.error =
+          '有 ' +
+          failed +
+          ' 章没能打开，已保存的章节会保留。再点一次下载会从剩下的章节继续。' +
+          (lastFailure ? ' 最近一次：' + lastFailure : '');
       } else {
         task.status = task.pending === 0 ? 'done' : 'error';
         if (task.status === 'error' && !task.error) {
@@ -663,17 +727,12 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
       }
       if (task.status === 'done') {
         await saveBookCatalog({
-          root: this.downloadPath(),
+          root,
           bookId,
           bookTitle: task.book.title,
           book: task.book,
           chapters,
           complete: true,
-        });
-        await saveBookAssets({
-          root: this.downloadPath(),
-          bookId,
-          book: task.book,
         });
       }
     } catch (e) {
@@ -687,7 +746,9 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
     } finally {
       this.runningDownloads.delete(bookId);
       this.persistTasks();
-      this.pushTask(task);
+      if (this.tasks.includes(task)) {
+        this.pushTask(task);
+      }
     }
   }
 
@@ -730,11 +791,16 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
     return this.context.globalState.get(AUTO_DOWNLOAD_KEY) === true;
   }
 
-  private saveDownloadSettings(pathValue: unknown, autoValue: unknown): { path: string; auto: boolean } {
+  private async saveDownloadSettings(
+    pathValue: unknown,
+    autoValue: unknown
+  ): Promise<{ path: string; auto: boolean }> {
     const downloadPath = normalizeDownloadPath(typeof pathValue === 'string' ? pathValue : '');
     const auto = autoValue === true;
-    void this.context.globalState.update(DOWNLOAD_PATH_KEY, downloadPath);
-    void this.context.globalState.update(AUTO_DOWNLOAD_KEY, auto);
+    await Promise.all([
+      this.context.globalState.update(DOWNLOAD_PATH_KEY, downloadPath),
+      this.context.globalState.update(AUTO_DOWNLOAD_KEY, auto),
+    ]);
     this.syncShared({ downloadPath, autoDownload: auto });
     return { path: downloadPath, auto };
   }
@@ -752,11 +818,12 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
     return this.downloadPath();
   }
 
-  private saveDataSettings(pathValue: unknown): { path: string; effective: string } {
+  private async saveDataSettings(pathValue: unknown): Promise<{ path: string; effective: string }> {
     const dataPath = normalizeDataPath(typeof pathValue === 'string' ? pathValue : '');
-    void this.context.globalState.update(DATA_PATH_KEY, dataPath);
+    await this.context.globalState.update(DATA_PATH_KEY, dataPath);
+    const effective = this.dataPath();
     // 把当前数据写入实际生效的目录（未单独配置时即下载目录），避免切换后看起来像数据丢了。
-    void writeSharedData(this.dataPath(), {
+    await writeSharedData(effective, {
       shelf: this.loadShelf(),
       progress: this.loadProgress(),
       bookmarks: this.loadBookmarks(),
@@ -764,8 +831,8 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
       ...this.readerSettings(),
       downloadPath: this.downloadPath(),
       autoDownload: this.autoDownload(),
-    }).catch(() => undefined);
-    return { path: dataPath, effective: this.dataPath() };
+    });
+    return { path: dataPath, effective };
   }
 
   private syncShared(patch: Record<string, unknown>) {

@@ -12,6 +12,8 @@ const PROGRESS_NAME = 'progress.json';
 const CRAWL_NAME = 'crawl.json';
 const MAIN_INDEX_NAME = 'index.json';
 const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_COVER_REDIRECTS = 5;
+const MAX_COVER_BYTES = 12 * 1024 * 1024;
 
 interface LibraryBook {
   dir: string;
@@ -72,18 +74,26 @@ export function normalizeDownloadPath(input: string): string {
   return path.resolve(raw);
 }
 
+/** 一次读取索引和目录，返回磁盘上实际存在的章节，避免逐章重复读文件。 */
+export async function listDownloadedChapterIds(rootInput: string, bookId: string): Promise<Set<string>> {
+  if (!bookId) {
+    return new Set();
+  }
+  const bookRoot = await resolveBookRoot(rootInput, bookId);
+  if (!bookRoot) {
+    return new Set();
+  }
+  return readExistingChapterIds(bookRoot);
+}
+
 export async function countDownloaded(rootInput: string, bookId: string, chapterIds: string[]): Promise<number> {
   if (!bookId || !chapterIds.length) {
     return 0;
   }
-  const bookRoot = await resolveBookRoot(rootInput, bookId);
-  if (!bookRoot) {
-    return 0;
-  }
-  const index = await readMainIndex(bookRoot);
+  const downloaded = await listDownloadedChapterIds(rootInput, bookId);
   let count = 0;
   for (const chapterId of chapterIds) {
-    if (index.files[chapterId]) {
+    if (downloaded.has(chapterId)) {
       count += 1;
     }
   }
@@ -98,22 +108,12 @@ export async function hasDownloadedBook(rootInput: string, bookId: string): Prom
   if (!bookRoot) {
     return false;
   }
-  const catalog = await readCatalogCache(bookRoot);
-  if (catalog?.complete && catalog.chapters.length) {
-    return true;
+  const catalog = await readStoredCatalog(bookRoot);
+  if (!catalog?.complete || !catalog.chapters.length) {
+    return false;
   }
-  if (catalog && catalog.chapters.length) {
-    const downloaded = await countDownloaded(
-      rootInput,
-      bookId,
-      catalog.chapters.map((item) => String(item.id))
-    );
-    if (downloaded > 0 && downloaded >= catalog.chapters.length) {
-      return true;
-    }
-  }
-  const main = await readMainIndex(bookRoot);
-  return catalog?.complete === true && Object.keys(main.files).length > 0;
+  const downloaded = await readExistingChapterIds(bookRoot);
+  return catalog.chapters.every((chapter) => downloaded.has(String(chapter.id)));
 }
 
 export async function readLocalChapters(rootInput: string, bookId: string): Promise<Chapter[] | undefined> {
@@ -124,7 +124,7 @@ export async function readLocalChapters(rootInput: string, bookId: string): Prom
   if (!bookRoot) {
     return undefined;
   }
-  const catalog = await readCatalogCache(bookRoot);
+  const catalog = await readStoredCatalog(bookRoot);
   if (catalog && catalog.chapters.length) {
     return catalog.chapters.map((item) => ({
       id: String(item.id),
@@ -253,31 +253,36 @@ export async function scanBookConfigs(rootInput: string): Promise<BookConfig[]> 
   } catch {
     return [];
   }
-  const configs: BookConfig[] = [];
-  const seen = new Set<string>();
-  for (const dir of dirs) {
+  const candidates = await mapLimit(dirs, 8, async (dir): Promise<BookConfig | undefined> => {
     const bookRoot = path.join(root, dir);
     const config = await readJson<BookConfig>(path.join(bookRoot, BOOK_CONFIG_NAME));
-    if (config && config.book && config.book.id && !seen.has(config.book.id)) {
-      seen.add(config.book.id);
-      configs.push(config);
-      continue;
+    if (config?.book?.id) {
+      return config;
     }
     const meta = await readJson<Record<string, unknown>>(path.join(bookRoot, 'assets', META_NAME));
     const id = meta && typeof meta.id === 'string' ? meta.id : '';
-    if (!id || seen.has(id)) {
-      continue;
+    if (!id) {
+      return undefined;
     }
-    seen.add(id);
     const book = (meta || {}) as unknown as Book;
-    const catalog = await readCatalogCache(bookRoot);
+    const catalog = await readStoredCatalog(bookRoot);
     const progress = await readJsonIfFresh<ProgressCache>(path.join(bookRoot, 'cache', PROGRESS_NAME));
-    configs.push({
+    return {
       book,
       chapters: catalog?.chapters,
       chaptersComplete: catalog?.complete,
       progress: progress ? { chapterIndex: progress.chapterIndex, chapterId: progress.chapterId } : undefined,
-    });
+    };
+  });
+  const configs: BookConfig[] = [];
+  const seen = new Set<string>();
+  for (const config of candidates) {
+    const id = config?.book?.id;
+    if (!config || !id || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    configs.push(config);
   }
   return configs;
 }
@@ -341,10 +346,36 @@ export async function saveDownloaded(options: {
   content: string;
   book?: Book;
 }): Promise<void> {
-  await enqueue(() => writeChapter(options));
+  await saveDownloadedBatch({
+    root: options.root,
+    bookId: options.bookId,
+    bookTitle: options.bookTitle,
+    book: options.book,
+    chapters: [
+      {
+        chapterId: options.chapterId,
+        title: options.title,
+        content: options.content,
+      },
+    ],
+  });
 }
 
-function enqueue(job: () => Promise<void>): Promise<void> {
+export async function saveDownloadedBatch(options: {
+  root: string;
+  bookId: string;
+  bookTitle: string;
+  chapters: Array<{ chapterId: string; title: string; content: string }>;
+  book?: Book;
+}): Promise<number> {
+  const chapters = options.chapters.filter((item) => item.chapterId && item.content);
+  if (!options.bookId || !chapters.length) {
+    return 0;
+  }
+  return enqueue(() => writeChapters({ ...options, chapters }));
+}
+
+function enqueue<T>(job: () => Promise<T>): Promise<T> {
   const run = writeQueue.then(job);
   writeQueue = run.then(
     () => undefined,
@@ -353,15 +384,13 @@ function enqueue(job: () => Promise<void>): Promise<void> {
   return run;
 }
 
-async function writeChapter(options: {
+async function writeChapters(options: {
   root: string;
   bookId: string;
-  chapterId: string;
   bookTitle: string;
-  title: string;
-  content: string;
+  chapters: Array<{ chapterId: string; title: string; content: string }>;
   book?: Book;
-}): Promise<void> {
+}): Promise<number> {
   const bookRoot = await ensureBookRoot(options.root, options.bookId, options.bookTitle);
   if (options.book) {
     await writeBookAssets({ root: options.root, bookId: options.bookId, book: options.book, bookRoot });
@@ -369,20 +398,31 @@ async function writeChapter(options: {
   const mainDir = path.join(bookRoot, 'MainTXT');
   await fs.promises.mkdir(mainDir, { recursive: true });
   const index = await readMainIndex(bookRoot);
-  const title = options.title.trim() || '正文';
-  let name = index.files[options.chapterId]?.name;
-  if (!name) {
-    name = safeName(title, '章节') + '-' + shortId(options.chapterId) + '.txt';
+  const unique = new Map<string, { chapterId: string; title: string; content: string }>();
+  for (const chapter of options.chapters) {
+    unique.set(chapter.chapterId, chapter);
   }
-  const file = safeJoin(mainDir, name);
-  await fs.promises.writeFile(file, title + '\n\n' + options.content, 'utf8');
-  index.files[options.chapterId] = { name, title };
+  let added = 0;
+  const writes: Promise<void>[] = [];
+  for (const chapter of unique.values()) {
+    const title = chapter.title.trim() || '正文';
+    let name = index.files[chapter.chapterId]?.name;
+    if (!name) {
+      name = safeName(title, '章节') + '-' + shortId(chapter.chapterId) + '.txt';
+      added += 1;
+    }
+    const file = safeJoin(mainDir, name);
+    writes.push(fs.promises.writeFile(file, title + '\n\n' + chapter.content, 'utf8'));
+    index.files[chapter.chapterId] = { name, title };
+  }
+  await Promise.all(writes);
   await fs.promises.writeFile(path.join(mainDir, MAIN_INDEX_NAME), JSON.stringify(index, null, 2), 'utf8');
   const done = Object.keys(index.files).length;
-  const catalog = await readCatalogCache(bookRoot);
+  const catalog = await readStoredCatalog(bookRoot);
   await patchBookConfig(bookRoot, {
     downloaded: { done, total: catalog?.chapters.length || done },
   });
+  return added;
 }
 
 async function writeBookCatalog(options: {
@@ -399,7 +439,7 @@ async function writeBookCatalog(options: {
   }
   const cacheDir = path.join(bookRoot, 'cache');
   await fs.promises.mkdir(cacheDir, { recursive: true });
-  const prev = await readCatalogCache(bookRoot);
+  const prev = await readStoredCatalog(bookRoot);
   if (prev && prev.chapters.length > options.chapters.length && prev.complete && !options.complete) {
     return;
   }
@@ -453,9 +493,14 @@ async function writeBookAssets(options: {
   if (existingMeta && typeof existingMeta.coverFile === 'string') {
     coverFile = existingMeta.coverFile;
   }
-  if (options.book.coverUrl && /^https?:\/\//i.test(options.book.coverUrl)) {
+  const coverUrl = options.book.coverUrl || '';
+  const coverIsCurrent =
+    !!coverFile &&
+    existingMeta?.coverUrl === coverUrl &&
+    (await safeFileExists(assetsDir, coverFile));
+  if (coverUrl && /^https?:\/\//i.test(coverUrl) && !coverIsCurrent) {
     try {
-      const saved = await downloadCover(assetsDir, options.book.coverUrl, coverFile);
+      const saved = await downloadCover(assetsDir, coverUrl, coverFile);
       if (saved) {
         coverFile = saved;
       }
@@ -472,7 +517,7 @@ async function writeBookAssets(options: {
     wordCount: options.book.wordCount || '',
     updateTime: options.book.updateTime || '',
     latestChapter: options.book.latestChapter || '',
-    coverUrl: options.book.coverUrl || '',
+    coverUrl,
     coverFile,
     pageUrl: options.book.pageUrl || '',
     catalogUrl: options.book.catalogUrl || '',
@@ -513,22 +558,66 @@ function guessImageExt(url: string): string {
   return '.jpg';
 }
 
-function fetchBinary(url: string): Promise<Buffer> {
+function fetchBinary(url: string, redirects = 0): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const lib = url.startsWith('https:') ? https : http;
-    const req = lib.get(url, { timeout: 15000 }, (res) => {
-      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        fetchBinary(res.headers.location).then(resolve, reject);
-        return;
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      reject(new Error('封面地址无效。'));
+      return;
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      reject(new Error('封面地址无效。'));
+      return;
+    }
+    const lib = parsed.protocol === 'https:' ? https : http;
+    const req = lib.get(
+      parsed,
+      {
+        timeout: 15000,
+        headers: {
+          Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
+        },
+      },
+      (res) => {
+        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          res.resume();
+          if (redirects >= MAX_COVER_REDIRECTS) {
+            reject(new Error('封面下载重定向次数过多。'));
+            return;
+          }
+          const next = new URL(res.headers.location, parsed).href;
+          fetchBinary(next, redirects + 1).then(resolve, reject);
+          return;
+        }
+        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+          res.resume();
+          reject(new Error('封面下载失败：' + (res.statusCode || 0)));
+          return;
+        }
+        const contentLength = Number(res.headers['content-length'] || 0);
+        if (contentLength > MAX_COVER_BYTES) {
+          res.resume();
+          reject(new Error('封面文件过大。'));
+          return;
+        }
+        const chunks: Buffer[] = [];
+        let bytes = 0;
+        res.on('error', reject);
+        res.on('data', (chunk) => {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          bytes += buffer.length;
+          if (bytes > MAX_COVER_BYTES) {
+            res.destroy(new Error('封面文件过大。'));
+            return;
+          }
+          chunks.push(buffer);
+        });
+        res.on('end', () => resolve(Buffer.concat(chunks)));
       }
-      if (!res.statusCode || res.statusCode >= 400) {
-        reject(new Error('封面下载失败：' + (res.statusCode || 0)));
-        return;
-      }
-      const chunks: Buffer[] = [];
-      res.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-      res.on('end', () => resolve(Buffer.concat(chunks)));
-    });
+    );
     req.on('error', reject);
     req.on('timeout', () => {
       req.destroy();
@@ -611,8 +700,47 @@ async function readMainIndex(bookRoot: string): Promise<MainTxtIndex> {
   return data;
 }
 
+async function readExistingChapterIds(bookRoot: string): Promise<Set<string>> {
+  const index = await readMainIndex(bookRoot);
+  let fileNames: Set<string>;
+  try {
+    const entries = await fs.promises.readdir(path.join(bookRoot, 'MainTXT'), { withFileTypes: true });
+    fileNames = new Set(
+      entries
+        .filter((entry) => entry.isFile())
+        .map((entry) => (process.platform === 'win32' ? entry.name.toLowerCase() : entry.name))
+    );
+  } catch {
+    return new Set();
+  }
+  const ids = new Set<string>();
+  for (const [chapterId, entry] of Object.entries(index.files)) {
+    const name = process.platform === 'win32' ? entry?.name.toLowerCase() : entry?.name;
+    if (name && fileNames.has(name)) {
+      ids.add(chapterId);
+    }
+  }
+  return ids;
+}
+
 async function readCatalogCache(bookRoot: string): Promise<CatalogCache | undefined> {
   return readJsonIfFresh<CatalogCache>(path.join(bookRoot, 'cache', CATALOG_NAME));
+}
+
+async function readStoredCatalog(bookRoot: string): Promise<CatalogCache | undefined> {
+  const cached = await readCatalogCache(bookRoot);
+  if (cached?.chapters?.length) {
+    return cached;
+  }
+  const config = await readJson<BookConfig>(path.join(bookRoot, BOOK_CONFIG_NAME));
+  if (!config || !Array.isArray(config.chapters) || !config.chapters.length) {
+    return undefined;
+  }
+  return {
+    chapters: config.chapters,
+    complete: config.chaptersComplete === true,
+    updatedAt: typeof config.updatedAt === 'number' ? config.updatedAt : 0,
+  };
 }
 
 async function readJsonIfFresh<T extends { updatedAt?: number }>(file: string): Promise<T | undefined> {
@@ -636,11 +764,43 @@ async function readJson<T>(file: string): Promise<T | undefined> {
   }
 }
 
+async function fileExists(file: string): Promise<boolean> {
+  try {
+    const stat = await fs.promises.stat(file);
+    return stat.isFile() && stat.size > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function safeFileExists(root: string, rel: string): Promise<boolean> {
+  try {
+    return await fileExists(safeJoin(root, rel));
+  } catch {
+    return false;
+  }
+}
+
+async function mapLimit<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const output = new Array<R>(items.length);
+  let cursor = 0;
+  const count = Math.min(Math.max(1, limit), items.length);
+  await Promise.all(
+    Array.from({ length: count }, async () => {
+      while (cursor < items.length) {
+        const index = cursor++;
+        output[index] = await worker(items[index], index);
+      }
+    })
+  );
+  return output;
+}
+
 function safeJoin(root: string, rel: string): string {
   const resolvedRoot = path.resolve(root);
   const target = path.resolve(resolvedRoot, rel);
   const diff = path.relative(resolvedRoot, target);
-  if (diff.startsWith('..') || path.isAbsolute(diff)) {
+  if (diff === '..' || diff.startsWith('..' + path.sep) || path.isAbsolute(diff)) {
     throw new Error('下载文件路径无效。');
   }
   return target;

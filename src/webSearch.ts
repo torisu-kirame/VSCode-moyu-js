@@ -31,6 +31,11 @@ interface AnalyzedBook {
   chapters: Chapter[];
 }
 
+interface CacheEntry<T> {
+  value: T;
+  expiresAt: number;
+}
+
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0';
 
@@ -42,6 +47,15 @@ const EDGE_CANDIDATES = [
 
 const chapterMemory = new Map<string, { chapters: Chapter[]; complete: boolean }>();
 const MAX_LIST_PAGES = 100;
+const LIST_PAGE_CONCURRENCY = 2;
+const INSPECT_CONCURRENCY = 4;
+const SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
+const INSPECT_CACHE_TTL_MS = 30 * 60 * 1000;
+const NEGATIVE_INSPECT_CACHE_TTL_MS = 2 * 60 * 1000;
+const searchMemory = new Map<string, CacheEntry<WebResult[]>>();
+const searchInFlight = new Map<string, Promise<WebResult[]>>();
+const inspectMemory = new Map<string, CacheEntry<AnalyzedBook | null>>();
+const inspectInFlight = new Map<string, Promise<AnalyzedBook | null>>();
 
 function findEdge(): string {
   for (const p of EDGE_CANDIDATES) {
@@ -112,6 +126,45 @@ function sameSite(a: string, b: string): boolean {
   } catch {
     return false;
   }
+}
+
+function getCached<T>(cache: Map<string, CacheEntry<T>>, key: string): T | undefined {
+  const entry = cache.get(key);
+  if (!entry) {
+    return undefined;
+  }
+  if (entry.expiresAt <= Date.now()) {
+    cache.delete(key);
+    return undefined;
+  }
+  cache.delete(key);
+  cache.set(key, entry);
+  return entry.value;
+}
+
+function setCached<T>(cache: Map<string, CacheEntry<T>>, key: string, value: T, ttl: number, max: number): void {
+  cache.delete(key);
+  cache.set(key, { value, expiresAt: Date.now() + ttl });
+  while (cache.size > max) {
+    const oldest = cache.keys().next().value as string | undefined;
+    if (oldest === undefined) {
+      break;
+    }
+    cache.delete(oldest);
+  }
+}
+
+function cloneAnalyzed(value: AnalyzedBook | null): AnalyzedBook | null {
+  if (!value) {
+    return null;
+  }
+  return {
+    book: {
+      ...value.book,
+      listPages: value.book.listPages ? value.book.listPages.slice() : undefined,
+    },
+    chapters: value.chapters.map((chapter) => ({ ...chapter })),
+  };
 }
 
 async function mapLimit<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>): Promise<R[]> {
@@ -266,68 +319,129 @@ async function newListPage(context: BrowserContext): Promise<Page> {
   return page;
 }
 
-async function crawlChapterLists(seeds: string[]): Promise<ExtractedLink[]> {
+async function crawlChapterLists(
+  seeds: string[],
+  prefetched?: { url: string; links: ExtractedLink[] }
+): Promise<ExtractedLink[]> {
   const pending = dropRedundantBookLanding(fillMissingAscPages(seeds)).slice(0, MAX_LIST_PAGES);
-  const seen = new Set<string>();
+  const discovered = new Set(pending.map(normListUrl));
+  const visited = new Set<string>(prefetched?.url ? [normListUrl(prefetched.url)] : []);
   const failed: string[] = [];
+  const pageLinks = new Map<string, ExtractedLink[]>();
+  if (prefetched?.url && prefetched.links.length) {
+    pageLinks.set(normListUrl(prefetched.url), prefetched.links);
+  }
+  let cursor = 0;
+
+  const addDiscovered = (urls: string[], queue?: string[]) => {
+    for (const url of urls) {
+      if (discovered.size >= MAX_LIST_PAGES) {
+        break;
+      }
+      const key = normListUrl(url);
+      if (!/^https?:\/\//i.test(url) || discovered.has(key)) {
+        continue;
+      }
+      discovered.add(key);
+      pending.push(url);
+      queue?.push(url);
+    }
+  };
+
+  const runWorker = async () => {
+    let context = await openContext(false);
+    let page = await newListPage(context);
+    const rotate = async () => {
+      await page.close().catch(() => {});
+      await context.close().catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      context = await openContext(false);
+      page = await newListPage(context);
+    };
+    try {
+      while (true) {
+        let url = '';
+        let key = '';
+        while (cursor < pending.length) {
+          const candidate = pending[cursor++];
+          const candidateKey = normListUrl(candidate);
+          if (!visited.has(candidateKey)) {
+            visited.add(candidateKey);
+            url = candidate;
+            key = candidateKey;
+            break;
+          }
+        }
+        if (!url) {
+          return;
+        }
+        let data = await readListPage(page, url);
+        if (!data) {
+          await rotate();
+          data = await readListPage(page, url);
+        }
+        if (!data) {
+          failed.push(url);
+          continue;
+        }
+        pageLinks.set(key, data.chapterLinks);
+        addDiscovered(data.listPages || []);
+        await page.waitForTimeout(160);
+      }
+    } finally {
+      await page.close().catch(() => {});
+      await context.close().catch(() => {});
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(LIST_PAGE_CONCURRENCY, pending.length) }, () => runWorker())
+  );
+
+  // 被限速的少量页面再用全新会话串行补一次，避免并发重试继续触发验证页。
+  if (failed.length) {
+    const retryQueue = failed.slice();
+    let context = await openContext(false);
+    let page = await newListPage(context);
+    try {
+      for (let i = 0; i < retryQueue.length; i++) {
+        const url = retryQueue[i];
+        const key = normListUrl(url);
+        let data = await readListPage(page, url);
+        if (!data) {
+          await page.close().catch(() => {});
+          await context.close().catch(() => {});
+          await new Promise((resolve) => setTimeout(resolve, 600));
+          context = await openContext(false);
+          page = await newListPage(context);
+          data = await readListPage(page, url);
+        }
+        if (!data) {
+          continue;
+        }
+        pageLinks.set(key, data.chapterLinks);
+        addDiscovered(data.listPages || [], retryQueue);
+        await page.waitForTimeout(160);
+      }
+    } finally {
+      await page.close().catch(() => {});
+      await context.close().catch(() => {});
+    }
+  }
+
   const links: ExtractedLink[] = [];
-  let context = await openContext(false);
-  let page = await newListPage(context);
-
-  // 有些站对连续翻页限速，返回验证页；换一个全新会话通常就能继续读。
-  const rotate = async () => {
-    await page.close().catch(() => {});
-    await context.close().catch(() => {});
-    await new Promise((resolve) => setTimeout(resolve, 1200));
-    context = await openContext(false);
-    page = await newListPage(context);
-  };
-
-  const visit = async (url: string, rememberFailure: boolean) => {
+  const emitted = new Set<string>();
+  const orderedPages = prefetched?.url ? [prefetched.url, ...pending] : pending;
+  for (const url of orderedPages) {
     const key = normListUrl(url);
-    if (!url || seen.has(key) || seen.size >= MAX_LIST_PAGES) {
-      return;
+    if (emitted.has(key)) {
+      continue;
     }
-    seen.add(key);
-    let data = await readListPage(page, url);
-    if (!data) {
-      await rotate();
-      data = await readListPage(page, url);
+    emitted.add(key);
+    const found = pageLinks.get(key);
+    if (found) {
+      links.push(...found);
     }
-    if (!data) {
-      if (rememberFailure) {
-        failed.push(url);
-      }
-      return;
-    }
-    links.push(...data.chapterLinks);
-    for (const next of data.listPages || []) {
-      if (pending.length >= MAX_LIST_PAGES) {
-        break;
-      }
-      if (!seen.has(normListUrl(next))) {
-        pending.push(next);
-      }
-    }
-    await page.waitForTimeout(280);
-  };
-
-  try {
-    for (let i = 0; i < pending.length && seen.size < MAX_LIST_PAGES; i++) {
-      await visit(pending[i], true);
-    }
-    for (const url of failed) {
-      seen.delete(normListUrl(url));
-    }
-    for (const url of failed) {
-      if (seen.size >= MAX_LIST_PAGES) {
-        break;
-      }
-      await visit(url, false);
-    }
-  } finally {
-    await page.close().catch(() => {});
-    await context.close().catch(() => {});
   }
   return links;
 }
@@ -409,17 +523,13 @@ async function analyzeUrl(page: Page, url: string): Promise<AnalyzedBook | null>
   return { book, chapters };
 }
 
-export async function searchWeb(query: string): Promise<WebResult[]> {
-  const browser = await getBrowser();
-  const context = await browser.newContext({
-    locale: 'zh-CN',
-    userAgent: UA,
-  });
+async function performWebSearch(query: string): Promise<WebResult[]> {
+  const context = await openContext();
   const page = await context.newPage();
   try {
     const url = 'https://cn.bing.com/search?q=' + encodeURIComponent(query);
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForSelector('li.b_algo', { timeout: 15000 });
+    await page.waitForSelector('li.b_algo', { state: 'attached', timeout: 15000 });
     const raw = await page.$$eval('li.b_algo', (items: Element[]) => {
       return items
         .slice(0, 10)
@@ -436,10 +546,87 @@ export async function searchWeb(query: string): Promise<WebResult[]> {
         })
         .filter((r) => r.title && /^https?:\/\//i.test(r.url));
     });
-    return raw.map((r) => ({ ...r, host: hostOf(r.url) }));
+    const seen = new Set<string>();
+    const results: WebResult[] = [];
+    for (const result of raw) {
+      const key = normListUrl(result.url);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      results.push({ ...result, host: hostOf(result.url) });
+    }
+    return results;
   } finally {
-    await context.close();
+    await page.close().catch(() => {});
+    await context.close().catch(() => {});
   }
+}
+
+export async function searchWeb(query: string): Promise<WebResult[]> {
+  const normalized = query.trim().replace(/\s+/g, ' ');
+  if (!normalized) {
+    return [];
+  }
+  const key = normalized.toLocaleLowerCase('zh-CN');
+  const cached = getCached(searchMemory, key);
+  if (cached !== undefined) {
+    return cached.map((result) => ({ ...result }));
+  }
+  let pending = searchInFlight.get(key);
+  if (!pending) {
+    pending = performWebSearch(normalized)
+      .then((results) => {
+        setCached(searchMemory, key, results, SEARCH_CACHE_TTL_MS, 30);
+        return results;
+      })
+      .finally(() => {
+        searchInFlight.delete(key);
+      });
+    searchInFlight.set(key, pending);
+  }
+  const results = await pending;
+  return results.map((result) => ({ ...result }));
+}
+
+async function analyzeWithCache(context: BrowserContext, url: string): Promise<AnalyzedBook | null> {
+  const key = normListUrl(url);
+  const cached = getCached(inspectMemory, key);
+  if (cached !== undefined) {
+    return cloneAnalyzed(cached);
+  }
+  let pending = inspectInFlight.get(key);
+  if (!pending) {
+    pending = (async () => {
+      let page: Page | undefined;
+      try {
+        page = await context.newPage();
+        page.setDefaultNavigationTimeout(12000);
+        return await analyzeUrl(page, url);
+      } catch {
+        return null;
+      } finally {
+        await page?.close().catch(() => {});
+      }
+      })()
+      .then((analyzed) => {
+        const ttl = analyzed ? INSPECT_CACHE_TTL_MS : NEGATIVE_INSPECT_CACHE_TTL_MS;
+        const aliases = new Set([key]);
+        if (analyzed?.book.pageUrl) {
+          aliases.add(normListUrl(analyzed.book.pageUrl));
+        }
+        if (analyzed?.book.catalogUrl) {
+          aliases.add(normListUrl(analyzed.book.catalogUrl));
+        }
+        aliases.forEach((alias) => setCached(inspectMemory, alias, analyzed, ttl, 120));
+        return analyzed;
+      })
+      .finally(() => {
+        inspectInFlight.delete(key);
+      });
+    inspectInFlight.set(key, pending);
+  }
+  return cloneAnalyzed(await pending);
 }
 
 export async function inspectWebResults(results: WebResult[]): Promise<InspectedResult[]> {
@@ -451,38 +638,37 @@ export async function inspectWebResults(results: WebResult[]): Promise<Inspected
     return results.map((r) => ({ ...r, isBook: false }));
   }
 
-  const context = await openContext();
-  try {
-    const found = await mapLimit(jobs, 3, async (job) => {
-      const page = await context.newPage();
-      page.setDefaultNavigationTimeout(12000);
-      try {
-        const analyzed = await analyzeUrl(page, job.r.url);
-        return { index: job.index, analyzed };
-      } catch {
-        return { index: job.index, analyzed: null as AnalyzedBook | null };
-      } finally {
-        await page.close().catch(() => {});
-      }
-    });
-
-    const byIndex = new Map<number, AnalyzedBook | null>();
-    found.forEach((item) => byIndex.set(item.index, item.analyzed));
-    const seen = new Set<string>();
-    return results.map((r, index) => {
-      const analyzed = byIndex.get(index);
-      if (!analyzed) {
-        return { ...r, isBook: false };
-      }
-      if (seen.has(analyzed.book.id)) {
-        return { ...r, isBook: false };
-      }
-      seen.add(analyzed.book.id);
-      return { ...r, isBook: true, book: analyzed.book };
-    });
-  } finally {
-    await context.close().catch(() => {});
+  const byIndex = new Map<number, AnalyzedBook | null>();
+  const uncached: typeof jobs = [];
+  for (const job of jobs) {
+    const cached = getCached(inspectMemory, normListUrl(job.r.url));
+    if (cached === undefined) {
+      uncached.push(job);
+    } else {
+      byIndex.set(job.index, cloneAnalyzed(cached));
+    }
   }
+  if (uncached.length) {
+    const context = await openContext();
+    try {
+      const found = await mapLimit(uncached, INSPECT_CONCURRENCY, async (job) => ({
+        index: job.index,
+        analyzed: await analyzeWithCache(context, job.r.url),
+      }));
+      found.forEach((item) => byIndex.set(item.index, item.analyzed));
+    } finally {
+      await context.close().catch(() => {});
+    }
+  }
+  const seen = new Set<string>();
+  return results.map((r, index) => {
+    const analyzed = byIndex.get(index);
+    if (!analyzed || seen.has(analyzed.book.id)) {
+      return { ...r, isBook: false };
+    }
+    seen.add(analyzed.book.id);
+    return { ...r, isBook: true, book: analyzed.book };
+  });
 }
 
 export async function loadWebBookChapters(input: {
@@ -501,43 +687,52 @@ export async function loadWebBookChapters(input: {
   if (!/^https?:\/\//i.test(url)) {
     throw new Error('缺少书籍地址，无法读取目录。');
   }
-  const context = await openContext(false);
-  try {
-    const page = await context.newPage();
-    page.setDefaultNavigationTimeout(12000);
+  let analyzed: AnalyzedBook | null;
+  const cachedAnalysis = getCached(inspectMemory, normListUrl(url));
+  if (cachedAnalysis !== undefined) {
+    analyzed = cloneAnalyzed(cachedAnalysis);
+  } else {
+    const context = await openContext(false);
     try {
-      const analyzed = await analyzeUrl(page, url);
-      if (!analyzed || !analyzed.chapters.length) {
-        throw new Error('没有识别到这部小说的章节目录。');
-      }
-      const seeds = fillMissingAscPages([...(input.listPages || []), ...(analyzed.book.listPages || [])]).filter((item) =>
-        /^https?:\/\//i.test(item)
-      );
-      let chapters = analyzed.chapters;
-      if (seeds.length > 1) {
-        const links = await crawlChapterLists(seeds);
-        const merged = chaptersFromLinks(links);
-        if (merged.length > chapters.length) {
-          chapters = merged;
-        }
-      }
-      const expected = Number((analyzed.book.wordCount || '').replace(/[^\d]/g, '')) || chapters.length;
-      const complete = chapters.length >= Math.max(1, Math.floor(expected * 0.7));
-      if (complete) {
-        // 下拉框的区间总数往往比实际章节多（末页不满），爬全后以实际链接数为准。
-        analyzed.book.wordCount = `${chapters.length} 章`;
-      }
-      remember(analyzed.book.id, chapters, complete);
-      if (input.bookId) {
-        remember(input.bookId, chapters, complete);
-      }
-      return { chapters, complete };
+      analyzed = await analyzeWithCache(context, url);
     } finally {
-      await page.close().catch(() => {});
+      await context.close().catch(() => {});
     }
-  } finally {
-    await context.close().catch(() => {});
   }
+  if (!analyzed || !analyzed.chapters.length) {
+    throw new Error('没有识别到这部小说的章节目录。');
+  }
+  const seedKeys = new Set<string>();
+  const seeds = fillMissingAscPages([...(input.listPages || []), ...(analyzed.book.listPages || [])]).filter((item) => {
+    const key = normListUrl(item);
+    if (!/^https?:\/\//i.test(item) || seedKeys.has(key)) {
+      return false;
+    }
+    seedKeys.add(key);
+    return true;
+  });
+  let chapters = analyzed.chapters;
+  if (seeds.length > 1) {
+    const links = await crawlChapterLists(seeds, {
+      url: analyzed.book.catalogUrl || url,
+      links: chapters.map((chapter) => ({ title: chapter.title, href: chapter.url || chapter.id })),
+    });
+    const merged = chaptersFromLinks(links);
+    if (merged.length > chapters.length) {
+      chapters = merged;
+    }
+  }
+  const expected = Number((analyzed.book.wordCount || '').replace(/[^\d]/g, '')) || chapters.length;
+  const complete = chapters.length >= Math.max(1, Math.floor(expected * 0.7));
+  if (complete) {
+    // 下拉框的区间总数往往比实际章节多（末页不满），爬全后以实际链接数为准。
+    analyzed.book.wordCount = `${chapters.length} 章`;
+  }
+  remember(analyzed.book.id, chapters, complete);
+  if (input.bookId) {
+    remember(input.bookId, chapters, complete);
+  }
+  return { chapters, complete };
 }
 
 async function readChapterOnPage(page: Page, url: string, fallbackTitle: string): Promise<ChapterContent> {
