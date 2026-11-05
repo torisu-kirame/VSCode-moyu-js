@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { Book, Chapter, ChapterContent, NovelSource, ShelfItem } from './types';
 import { DemoSource, RemoteSource } from './novelSource';
+import { createDataArchive, importDataArchive } from './dataArchive';
 
 // playwright-core 体积大、加载需要约 2 秒，若在顶层静态导入会阻塞扩展激活，
 // 表现为打开插件时顶部进度条长时间转圈。改为首次真正联网时才动态加载。
@@ -331,6 +333,70 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
           this.respond(msg.requestId, true, summary);
           break;
         }
+        case 'exportArchive': {
+          const fileName = `moyu-novel-backup-${new Date().toISOString().replace(/[-:]/g, '').replace(/T/, '-').slice(0, 15)}.zip`;
+          const selected = await vscode.window.showSaveDialog({
+            defaultUri: vscode.Uri.file(path.join(path.dirname(this.downloadPath()), fileName)),
+            filters: { 'ZIP 压缩包': ['zip'] },
+            saveLabel: '导出全部数据',
+          });
+          if (!selected) {
+            this.respond(msg.requestId, true, { canceled: true });
+            break;
+          }
+          const outputPath = selected.fsPath.toLowerCase().endsWith('.zip') ? selected.fsPath : selected.fsPath + '.zip';
+          const result = await vscode.window.withProgress(
+            { location: vscode.ProgressLocation.Notification, title: '正在导出摸鱼小说数据…', cancellable: false },
+            () =>
+              createDataArchive({
+                outputPath,
+                downloadRoot: this.downloadPath(),
+                version: String(this.context.extension.packageJSON.version || '1.0.0'),
+                data: this.currentSharedData(),
+              })
+          );
+          this.respond(msg.requestId, true, { ...result, canceled: false });
+          break;
+        }
+        case 'importArchive': {
+          const selected = await vscode.window.showOpenDialog({
+            canSelectFiles: true,
+            canSelectFolders: false,
+            canSelectMany: false,
+            filters: { 'ZIP 压缩包': ['zip'] },
+            openLabel: '导入全部数据',
+          });
+          if (!selected?.length) {
+            this.respond(msg.requestId, true, { canceled: true });
+            break;
+          }
+          const currentDownloadRoot = this.downloadPath();
+          const imported = await vscode.window.withProgress(
+            { location: vscode.ProgressLocation.Notification, title: '正在导入摸鱼小说数据…', cancellable: false },
+            () => importDataArchive(selected[0].fsPath, currentDownloadRoot)
+          );
+          // 备份中的旧设备路径通常不可移植；下载文件已恢复到当前目录，因此保留当前路径。
+          imported.data.downloadPath = currentDownloadRoot;
+          const summary = await this.applySharedData(imported.data);
+          const configs = await scanBookConfigs(currentDownloadRoot);
+          if (configs.length) {
+            const shelf = this.loadShelf();
+            for (const cfg of configs) {
+              if (cfg.book?.id && !shelf.some((item) => item.book.id === cfg.book!.id)) {
+                shelf.push({
+                  book: cfg.book,
+                  addedAt: Date.now(),
+                  lastReadChapterIndex: cfg.progress?.chapterIndex || 0,
+                });
+              }
+            }
+            await this.context.globalState.update(SHELF_KEY, shelf);
+            summary.shelf = shelf.length;
+          }
+          await writeSharedData(this.dataPath(), this.currentSharedData());
+          this.respond(msg.requestId, true, { ...summary, files: imported.files, canceled: false });
+          break;
+        }
         case 'listDownloads': {
           this.respond(msg.requestId, true, this.tasks.map((task) => this.slimTask(task)));
           break;
@@ -386,6 +452,7 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
           const saved = this.toggleBookmark(
             String(msg.payload.bookId || ''),
             String(msg.payload.chapterId || ''),
+            String(msg.payload.chapterUrl || ''),
             String(msg.payload.title || ''),
             Number(msg.payload.chapterIndex)
           );
@@ -843,6 +910,19 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
     void writeSharedData(root, patch).catch(() => undefined);
   }
 
+  private currentSharedData(): SharedData {
+    return {
+      shelf: this.loadShelf(),
+      progress: this.loadProgress(),
+      bookmarks: this.loadBookmarks(),
+      theme: this.loadTheme(),
+      ...this.readerSettings(),
+      downloadPath: this.downloadPath(),
+      autoDownload: this.autoDownload(),
+      downloadTasks: this.tasks,
+    };
+  }
+
   private async loadChapterContent(payload: {
     source?: string;
     bookId?: string;
@@ -887,14 +967,14 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
     return (this.context.globalState.get(BOOKMARKS_KEY) as Record<string, Bookmark[]> | undefined) ?? {};
   }
 
-  private toggleBookmark(bookId: string, chapterId: string, title: string, chapterIndex: number): Bookmark[] {
+  private toggleBookmark(bookId: string, chapterId: string, chapterUrl: string, title: string, chapterIndex: number): Bookmark[] {
     const all = this.loadBookmarks();
     const list = Array.isArray(all[bookId]) ? all[bookId].slice() : [];
     const at = list.findIndex((item) => item.chapterId === chapterId);
     if (at >= 0) {
       list.splice(at, 1);
     } else {
-      list.push({ chapterId, title, chapterIndex: Number.isFinite(chapterIndex) ? chapterIndex : 0 });
+      list.push({ chapterId, chapterUrl: chapterUrl || chapterId, title, chapterIndex: Number.isFinite(chapterIndex) ? chapterIndex : 0 });
       list.sort((a, b) => a.chapterIndex - b.chapterIndex);
     }
     all[bookId] = list;
@@ -987,6 +1067,7 @@ interface DownloadTask {
 
 interface Bookmark {
   chapterId: string;
+  chapterUrl?: string;
   title: string;
   chapterIndex: number;
 }

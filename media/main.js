@@ -151,6 +151,8 @@
             <input id="data-path" type="text" spellcheck="false" placeholder="留空则使用下载存储路径" />
             <div class="data-load-line">
               <button id="data-import" class="btn primary" type="button">读取数据</button>
+              <button id="data-export" class="btn" type="button">导出 ZIP</button>
+              <button id="data-zip-import" class="btn" type="button">导入 ZIP</button>
               <span id="data-hint" class="setting-desc"></span>
             </div>
             <p class="setting-desc error-text hidden" id="data-error"></p>
@@ -253,6 +255,8 @@
     dataPath: $('data-path'),
     dataError: $('data-error'),
     dataImport: $('data-import'),
+    dataExport: $('data-export'),
+    dataZipImport: $('data-zip-import'),
     dataHint: $('data-hint'),
     fontSize: $('font-size'),
     fontPreview: $('font-preview'),
@@ -520,7 +524,7 @@
         ? '<div class="loading">正在读取目录…</div>'
         : `<div class="error-text">${esc(d.error || '暂时没有章节')}</div>`;
     const bookmarkGrid = marked.length
-      ? marked.map((item) => `<button type="button" class="detail-chapter bookmark-chapter" data-action="bookmark-chapter" data-index="${item.chapterIndex}">${esc(item.title)}</button>`).join('')
+      ? marked.map((item, bookmarkIndex) => `<button type="button" class="detail-chapter bookmark-chapter" data-action="bookmark-chapter" data-bookmark-index="${bookmarkIndex}">${esc(item.title)}</button>`).join('')
       : '<div class="setting-desc">暂无书签章节</div>';
     els.detailBody.dataset.id = b.id;
     els.detailBody.innerHTML = `
@@ -760,7 +764,7 @@
     btn.disabled = inShelf;
   }
 
-  async function openReader(book, startIndex) {
+  async function openReader(book, startIndex, bookmark) {
     els.searchView.classList.add('hidden');
     els.shelfView.classList.add('hidden');
     els.downloadsView.classList.add('hidden');
@@ -772,6 +776,24 @@
     els.readerContent.textContent = '';
     state.reader = { book, chapters: [], chapterIndex: 0 };
     updateReaderShelfBtn();
+
+    const detailChapters =
+      state.detail && state.detail.book && state.detail.book.id === book.id && Array.isArray(state.detail.chapters)
+        ? state.detail.chapters
+        : [];
+    if (bookmark && !detailChapters.length) {
+      const directChapter = {
+        id: bookmark.chapterId,
+        url: bookmark.chapterUrl || bookmark.chapterId,
+        title: bookmark.title,
+      };
+      state.reader = { book, chapters: [directChapter], chapterIndex: 0 };
+      state.catalogOpen = false;
+      renderCatalog();
+      await loadChapter(0);
+      void hydrateBookmarkedReader(book, bookmark);
+      return;
+    }
 
     try {
       let chapters;
@@ -802,7 +824,12 @@
       if (complete && chapters.length) {
         book.wordCount = chapters.length + ' 章';
       }
-      let chapterIndex = typeof startIndex === 'number' ? startIndex : -1;
+      let chapterIndex = bookmark
+        ? chapters.findIndex((chapter) => chapter.id === bookmark.chapterId || chapter.url === bookmark.chapterId)
+        : typeof startIndex === 'number' ? startIndex : -1;
+      if (chapterIndex < 0 && bookmark && Number.isFinite(bookmark.chapterIndex)) {
+        chapterIndex = bookmark.chapterIndex;
+      }
       if (chapterIndex < 0) {
         const progress = await post('getProgress', { bookId: book.id });
         chapterIndex = 0;
@@ -953,6 +980,7 @@
       state.bookmarks[r.book.id] = await post('toggleBookmark', {
         bookId: r.book.id,
         chapterId: chapter.id,
+        chapterUrl: chapter.url || chapter.id,
         title: chapter.title,
         chapterIndex: index,
       });
@@ -1057,10 +1085,96 @@
     }
   }
 
+  async function hydrateBookmarkedReader(book, bookmark) {
+    try {
+      const resp = await post('getChapters', {
+        bookId: book.id,
+        source: book.source,
+        catalogUrl: book.catalogUrl || '',
+        pageUrl: book.pageUrl || '',
+        listPages: book.listPages || [],
+      });
+      if (!state.reader || state.reader.book.id !== book.id) return;
+      const chapters = Array.isArray(resp) ? resp : (resp && resp.chapters) || [];
+      if (!chapters.length) return;
+      const found = chapters.findIndex((chapter) => chapter.id === bookmark.chapterId || chapter.url === bookmark.chapterId);
+      const chapterIndex = found >= 0 ? found : Math.min(Math.max(0, Number(bookmark.chapterIndex) || 0), chapters.length - 1);
+      const needsReload = !els.readerContent.textContent.trim() || !!els.readerContent.querySelector('.error-text');
+      state.reader.chapters = chapters;
+      state.reader.chapterIndex = chapterIndex;
+      updateChapterPos();
+      renderCatalog();
+      if (needsReload) {
+        await loadChapter(chapterIndex);
+        return;
+      }
+      await post('saveProgress', { bookId: book.id, chapterIndex, chapterId: chapters[chapterIndex].id });
+    } catch (e) {
+      // 书签正文已经显示；后台目录刷新失败时不影响继续阅读当前章。
+    }
+  }
+
+  async function exportArchive() {
+    els.dataError.classList.add('hidden');
+    els.dataError.textContent = '';
+    els.dataExport.disabled = true;
+    els.dataHint.textContent = '正在导出…';
+    try {
+      const result = await post('exportArchive', {});
+      els.dataHint.textContent = result && result.canceled
+        ? '已取消导出'
+        : '已导出 ' + Number(result.files || 0) + ' 个文件：' + String(result.path || '');
+    } catch (e) {
+      els.dataHint.textContent = '';
+      els.dataError.textContent = e.message || '导出 ZIP 失败';
+      els.dataError.classList.remove('hidden');
+    } finally {
+      els.dataExport.disabled = false;
+    }
+  }
+
+  async function importArchive() {
+    els.dataError.classList.add('hidden');
+    els.dataError.textContent = '';
+    els.dataZipImport.disabled = true;
+    els.dataHint.textContent = '正在导入…';
+    try {
+      const result = await post('importArchive', {});
+      if (result && result.canceled) {
+        els.dataHint.textContent = '已取消导入';
+        return;
+      }
+      applyTheme(await post('getTheme', {}));
+      state.readerSettings = await post('getReaderSettings', {});
+      els.fontSize.value = state.readerSettings.fontSize;
+      els.fontModifier.value = state.readerSettings.fontSizeModifier;
+      els.bookmarkModifier.value = state.readerSettings.bookmarkModifier;
+      applyReaderFontSize();
+      const download = await post('getDownloadSettings', {});
+      $('download-path').value = download.path || '';
+      $('auto-download').checked = !!download.auto;
+      state.shelf = await post('getShelf', {});
+      state.bookmarks = (await post('getBookmarks', {})) || {};
+      renderShelf();
+      refreshSearch();
+      updateReaderShelfBtn();
+      if (state.detail) renderDetail();
+      els.dataHint.textContent = '已导入 ' + Number(result.files || 0) + ' 个下载文件，书架共 ' + state.shelf.length + ' 本书';
+    } catch (e) {
+      els.dataHint.textContent = '';
+      els.dataError.textContent = e.message || '导入 ZIP 失败';
+      els.dataError.classList.remove('hidden');
+    } finally {
+      els.dataZipImport.disabled = false;
+    }
+  }
+
   $('download-path').addEventListener('change', saveDownloadSettings);
   $('auto-download').addEventListener('change', saveDownloadSettings);
   $('data-path').addEventListener('change', saveDataSettings);
   $('data-import').addEventListener('click', loadSharedData);
+  $('data-export').addEventListener('click', exportArchive);
+  $('data-zip-import').addEventListener('click', importArchive);
   els.fontSize.addEventListener('input', () => {
     const value = Number(els.fontSize.value);
     if (Number.isFinite(value) && value >= 12 && value <= 32) els.fontPreview.style.fontSize = value + 'px';
@@ -1156,7 +1270,9 @@
     }
     if (action === 'bookmark-chapter') {
       const book = state.detail && state.detail.book;
-      if (book) await openReader(book, Number(btn.dataset.index) || 0);
+      const bookmarks = book ? state.bookmarks[book.id] || [] : [];
+      const bookmark = bookmarks[Number(btn.dataset.bookmarkIndex) || 0];
+      if (book && bookmark) await openReader(book, bookmark.chapterIndex, bookmark);
       return;
     }
     if (action === 'catalog-bookmark') {

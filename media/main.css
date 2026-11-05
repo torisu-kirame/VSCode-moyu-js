@@ -1030,6 +1030,7 @@ html body.theme-light .book-menu-btn {
 
 .data-load-line {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   width: 100%;
@@ -1044,7 +1045,7 @@ html body.theme-light .book-menu-btn {
 }
 
 .data-load-line #data-hint {
-  flex: 1;
+  flex: 1 1 100%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

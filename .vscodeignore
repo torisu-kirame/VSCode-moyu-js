@@ -2,6 +2,10 @@
 src/**
 node_modules/**
 !node_modules/playwright-core/**
+!node_modules/yauzl/**
+!node_modules/yazl/**
+!node_modules/pend/**
+!node_modules/buffer-crc32/**
 out/**
 tsconfig.json
 .gitignore
