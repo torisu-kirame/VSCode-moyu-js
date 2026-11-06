@@ -29,6 +29,9 @@ export interface ExtractedPage {
   contentTitle: string;
   contentText: string;
   contentChars: number;
+  /** 正文翻页候选，不与整本书的目录分页混用。 */
+  contentPageLinks?: ExtractedLink[];
+  contentNextControl?: number;
 }
 
 const CHAPTER_RE = /第\s*[0-9０-９零〇一二三四五六七八九十百千万两]+\s*[章节回卷集部]/;
@@ -281,6 +284,9 @@ export function cleanNovelText(raw: string): string {
     .map((line) => line.replace(/[ \t\u00a0]+/g, ' ').trim())
     .filter(Boolean);
   const kept = lines.filter((line) => {
+    if (/^(?:上一页|下一页|上页|下页|本章未完.*|未完待续.*|第\s*\d+\s*页(?:\s*[/／共]\s*\d+\s*页?)?)$/.test(line)) {
+      return false;
+    }
     if (LINE_NOISE.test(line) && line.length < 80) {
       return false;
     }
@@ -799,7 +805,7 @@ export function extractNovelPage(): ExtractedPage {
     }
     const text = readableText(el, stripNoise);
     const chars = chineseLen(text);
-    if (chars < 80) {
+    if (chars < 10) {
       return best;
     }
     const linkText = Array.from(el.querySelectorAll('a')).map((a) => textOf(a)).join('');
@@ -850,11 +856,21 @@ export function extractNovelPage(): ExtractedPage {
 
   let contentTitle = textOf(document.querySelector('h1, .chapter-title, .chapterTitle, #chapterTitle'));
   if (!contentTitle) {
+    const title = textOf(document.querySelector('.title'));
+    if (chapterTitle(title)) contentTitle = title.replace(/^\d+[）)]\s*/, '');
+  }
+  if (!contentTitle) {
     const first = best.text.split('\n').map((s) => s.trim()).filter(Boolean)[0] || '';
     if (chapterTitle(first)) {
       contentTitle = first;
     }
   }
+
+  const pageIndicator = ((document.body && document.body.innerText) || '').match(/第\s*[（(]?\s*(\d+)\s*[/／]\s*(\d+)\s*[）)]?\s*页/);
+  const controls = Array.from(document.querySelectorAll('a, button'));
+  const nextControl = pageIndicator && Number(pageIndicator[1]) < Number(pageIndicator[2])
+    ? controls.findIndex((el) => /^(下一页|下页|下一章)$/.test(labelOf(el).replace(/\s+/g, '')))
+    : -1;
 
   return {
     finalUrl: location.href.split('#')[0],
@@ -877,5 +893,14 @@ export function extractNovelPage(): ExtractedPage {
     contentTitle,
     contentText: best.text,
     contentChars: chineseLen(best.text),
+    contentNextControl: nextControl >= 0 ? nextControl : undefined,
+    contentPageLinks: Array.from(document.querySelectorAll('a[href], link[rel="next"]'))
+      .filter((el) => {
+        const label = labelOf(el).replace(/\s+/g, '');
+        return /下一页|下页|下[一半]章|下一章|继续阅读|^next(?:page)?[>»›]*$|^[>»›]+$|^\d{1,3}$|^第\d+页$/i.test(label)
+          || el.getAttribute('rel') === 'next';
+      })
+      .map((el) => ({ title: labelOf(el), href: absLink(el.getAttribute('href') || '') }))
+      .filter((link) => !!link.href),
   };
 }

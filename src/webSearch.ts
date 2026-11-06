@@ -4,15 +4,14 @@ import {
   bookFromExtract,
   chaptersFromLinks,
   classifyExtract,
-  cleanNovelText,
   ExtractedLink,
   ExtractedPage,
   extractNovelPage,
   isChapterTitle,
   linksLookLikeOneBook,
-  stripLeadingTitle,
 } from './extractNovel';
 import { Book, Chapter, ChapterContent } from './types';
+import { collectChapterPages } from './chapterPagination';
 
 export interface WebResult {
   title: string;
@@ -735,39 +734,44 @@ export async function loadWebBookChapters(input: {
   return { chapters, complete };
 }
 
-async function readChapterOnPage(page: Page, url: string, fallbackTitle: string): Promise<ChapterContent> {
+async function readChapterOnPage(page: Page, url: string, navigate = true): Promise<ExtractedPage> {
   if (!/^https?:\/\//i.test(url)) {
     throw new Error('章节地址无效。');
   }
   let extracted: ExtractedPage | null = null;
   let reason = '页面没有打开';
   try {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    if (navigate) await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
     await page
       .waitForFunction(
         () => {
           const text = (document.body && document.body.innerText) || '';
           return text.replace(/\s/g, '').length > 40 || document.querySelectorAll('a').length > 15;
         },
+        undefined,
         { timeout: 4000 }
       )
       .catch(() => {});
-    extracted = await page.evaluate(extractNovelPage);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        extracted = await page.evaluate(extractNovelPage);
+        if (extracted.contentTitle && extracted.contentChars >= 10) break;
+      } catch (error) {
+        if (attempt === 2) throw error;
+      }
+      if (attempt < 2) {
+        await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
+        await page.waitForTimeout(700);
+      }
+    }
   } catch (e) {
     reason = e instanceof Error ? e.message : String(e);
   }
   if (!extracted) {
     throw new Error('打开章节网页失败：' + reason);
   }
-  const text = stripLeadingTitle(cleanNovelText(extracted.contentText), extracted.contentTitle || fallbackTitle);
-  const chars = (text.match(/[\u4e00-\u9fff]/g) || []).length;
-  if (chars < 80) {
-    throw new Error('没能从该网页提取到正文。');
-  }
-  const title = isChapterTitle(extracted.contentTitle)
-    ? extracted.contentTitle
-    : fallbackTitle || extracted.contentTitle || '正文';
-  return { title, content: text };
+  if (looksBlocked(extracted)) throw new Error('章节分页遇到网站验证，请稍后重试。');
+  return extracted;
 }
 
 /** 每章用独立会话读取：连续请求同一会话容易被站点限速，返回验证页。 */
@@ -776,7 +780,13 @@ export async function loadWebChapterContent(url: string, fallbackTitle: string):
   const page = await context.newPage();
   page.setDefaultNavigationTimeout(20000);
   try {
-    return await readChapterOnPage(page, url, fallbackTitle);
+    return await collectChapterPages(url, fallbackTitle, (nextUrl) => readChapterOnPage(page, nextUrl), async (extracted) => {
+      await Promise.all([
+        page.waitForURL((next) => next.href !== extracted.finalUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }),
+        page.locator('a, button').nth(extracted.contentNextControl!).click({ timeout: 5000 }),
+      ]);
+      return readChapterOnPage(page, page.url(), false);
+    });
   } finally {
     await page.close().catch(() => {});
     await context.close().catch(() => {});
