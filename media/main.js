@@ -567,6 +567,12 @@
     state.detail = { book, chapters: [], loading: true, error: '' };
     switchView('detail');
     renderDetail();
+    const bookmarksReady = post('getBookmarks', {})
+      .then((bookmarks) => {
+        state.bookmarks = bookmarks || {};
+        if (state.detail && state.detail.book.id === book.id) renderDetail();
+      })
+      .catch(() => undefined);
     try {
       const resp = await post('getChapters', {
         bookId: book.id,
@@ -591,6 +597,7 @@
       if (!state.detail || state.detail.book.id !== book.id) return;
       state.detail = { book, chapters: [], loading: false, error: e.message || '读取目录失败' };
     }
+    await bookmarksReady;
     renderDetail();
   }
 
@@ -1288,7 +1295,8 @@
     if (action === 'detail-catalog') {
       const book = state.detail && state.detail.book;
       if (!book) return;
-      await openReader(book, 0);
+      // 不指定章节，让阅读器恢复上次进度；打开目录不应把进度重置到第一章。
+      await openReader(book);
       state.catalogOpen = true;
       els.catalog.classList.remove('hidden');
     }
@@ -1422,6 +1430,11 @@
       state.shelf = await post('getShelf', {});
     } catch (e) {
       state.shelf = [];
+    }
+    try {
+      state.bookmarks = (await post('getBookmarks', {})) || {};
+    } catch (e) {
+      state.bookmarks = {};
     }
     try {
       const tasks = await post('listDownloads', {});
