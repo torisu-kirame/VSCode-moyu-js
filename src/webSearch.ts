@@ -8,6 +8,7 @@ import {
   ExtractedPage,
   extractNovelPage,
   isChapterTitle,
+  isSparseIxdzsCatalog,
   linksLookLikeOneBook,
 } from './extractNovel';
 import { Book, Chapter, ChapterContent } from './types';
@@ -28,6 +29,7 @@ export interface InspectedResult extends WebResult {
 interface AnalyzedBook {
   book: Book;
   chapters: Chapter[];
+  declaredChapterTotal?: number;
 }
 
 interface CacheEntry<T> {
@@ -158,6 +160,7 @@ function cloneAnalyzed(value: AnalyzedBook | null): AnalyzedBook | null {
     return null;
   }
   return {
+    declaredChapterTotal: value.declaredChapterTotal,
     book: {
       ...value.book,
       listPages: value.book.listPages ? value.book.listPages.slice() : undefined,
@@ -193,10 +196,29 @@ async function readExtracted(page: Page, url: string, timeout = 12000): Promise<
           const text = (document.body && document.body.innerText) || '';
           return text.replace(/\s/g, '').length > 40 || document.querySelectorAll('a').length > 15;
         },
+        undefined,
         { timeout: 4000 }
       )
       .catch(() => {});
-    return await page.evaluate(extractNovelPage);
+    const extracted = await page.evaluate(extractNovelPage);
+    if (extracted.declaredChapterTotal && extracted.chapterLinks.length < extracted.declaredChapterTotal) {
+      const expand = page.locator('.catalog-all a[href="#a-list"]').first();
+      try {
+        await expand.click({ timeout: 2500 });
+        await page.waitForFunction(
+          (count) => document.querySelectorAll('.clist .u-chapter li a[href]').length >= count,
+          extracted.declaredChapterTotal,
+          { timeout: 8000 }
+        );
+      } catch {
+        // A failed expansion can still leave a usable partial catalog.
+      }
+      if (!page.isClosed()) {
+        const expanded = await page.evaluate(extractNovelPage).catch(() => null);
+        if (expanded && expanded.chapterLinks.length > extracted.chapterLinks.length) return expanded;
+      }
+    }
+    return extracted;
   } catch {
     return null;
   }
@@ -519,7 +541,7 @@ async function analyzeUrl(page: Page, url: string): Promise<AnalyzedBook | null>
   if (!book.updateTime && (listPage?.updateTime || first.updateTime)) {
     book.updateTime = listPage?.updateTime || first.updateTime;
   }
-  return { book, chapters };
+  return { book, chapters, declaredChapterTotal: listPage?.declaredChapterTotal };
 }
 
 async function performWebSearch(query: string): Promise<WebResult[]> {
@@ -722,7 +744,9 @@ export async function loadWebBookChapters(input: {
     }
   }
   const expected = Number((analyzed.book.wordCount || '').replace(/[^\d]/g, '')) || chapters.length;
-  const complete = chapters.length >= Math.max(1, Math.floor(expected * 0.7));
+  const complete = analyzed.declaredChapterTotal
+    ? chapters.length >= analyzed.declaredChapterTotal && !isSparseIxdzsCatalog(chapters)
+    : chapters.length >= Math.max(1, Math.floor(expected * 0.7));
   if (complete) {
     // 下拉框的区间总数往往比实际章节多（末页不满），爬全后以实际链接数为准。
     analyzed.book.wordCount = `${chapters.length} 章`;

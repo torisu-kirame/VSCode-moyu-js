@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { isSparseIxdzsCatalog } from './extractNovel';
 import * as path from 'path';
 import { Book, Chapter, ChapterContent, NovelSource, ShelfItem } from './types';
 import { DemoSource, RemoteSource } from './novelSource';
@@ -564,7 +565,7 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
       const finishedTask = this.tasks.some((task) => task.book.id === bookId && task.status === 'done');
       if (downloaded || finishedTask) {
         const local = await readLocalChapters(this.downloadPath(), bookId);
-        if (local && local.length) {
+        if (local && local.length && !isSparseIxdzsCatalog(local)) {
           this.cacheChapters(bookId, local, true);
           return { chapters: local, complete: true };
         }
@@ -572,7 +573,7 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
     }
     if (book.source === 'web') {
       const fresh = this.readChapterCache(bookId, true);
-      if (fresh) {
+      if (fresh && !isSparseIxdzsCatalog(fresh)) {
         return { chapters: fresh, complete: true };
       }
       try {
@@ -588,11 +589,11 @@ class NovelViewProvider implements vscode.WebviewViewProvider {
       } catch (e) {
         const local = await readLocalChapters(this.downloadPath(), bookId);
         if (local && local.length) {
-          return { chapters: local, complete: true };
+          return { chapters: local, complete: !isSparseIxdzsCatalog(local) };
         }
         const cached = this.readChapterCache(bookId, false);
         if (cached) {
-          return { chapters: cached, complete: true };
+          return { chapters: cached, complete: !isSparseIxdzsCatalog(cached) };
         }
         throw e;
       }

@@ -23,6 +23,7 @@ export interface ExtractedPage {
   listPages: string[];
   /** 下拉页码里能看出的章节总数；没有分页时等于当前页章节数 */
   chapterTotal: number;
+  declaredChapterTotal?: number;
   catalogUrl: string;
   hasPrevNext: boolean;
   hasNovelMeta: boolean;
@@ -332,6 +333,17 @@ export function webBookId(url: string): string {
   return 'web:' + (h >>> 0).toString(16);
 }
 
+/** Detect the preview catalog even when an older version cached it as complete. */
+export function isSparseIxdzsCatalog(chapters: Chapter[]): boolean {
+  const chapterPaths = chapters.map((chapter) => (chapter.url || chapter.id).match(
+    /^https?:\/\/(?:www\.)?ixdzs8\.com\/read\/(\d+)\/p(\d+)\.html$/i
+  ));
+  const bookId = chapterPaths[0]?.[1];
+  if (!bookId || !chapterPaths.every((match) => match?.[1] === bookId)) return false;
+  const numbers = new Set(chapterPaths.map((match) => Number(match?.[2])));
+  return chapters.some((_, index) => !numbers.has(index + 1));
+}
+
 export function chaptersFromLinks(links: ExtractedLink[], extra?: Chapter): Chapter[] {
   const seen = new Set<string>();
   const out: Chapter[] = [];
@@ -615,7 +627,10 @@ export function extractNovelPage(): ExtractedPage {
     }
   }
 
-  let chapterTotal = chapterLinks.length;
+  const declaredTotal = /^(?:www\.)?ixdzs8\.com$/i.test(location.hostname) && /^\/read\/\d+\/?$/.test(location.pathname)
+    ? Number(textOf(document.querySelector('.catalog-toggle .sub-text-r')).match(/共\s*(\d+)\s*章/)?.[1]) || undefined
+    : undefined;
+  let chapterTotal = Math.max(chapterLinks.length, declaredTotal || 0);
   let rangeCount = 0;
   const rangeRe = /第?\s*([0-9０-９]+)\s*[-~～—到至]\s*([0-9０-９]+)\s*章/;
   document.querySelectorAll('select option').forEach((opt) => {
@@ -887,6 +902,7 @@ export function extractNovelPage(): ExtractedPage {
     chapterLinks,
     listPages,
     chapterTotal,
+    declaredChapterTotal: declaredTotal,
     catalogUrl,
     hasPrevNext,
     hasNovelMeta,
